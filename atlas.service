@@ -1,0 +1,20 @@
+[Unit]
+Description=ATLAS — Assistente Pessoal Executivo e Socrático
+After=network.target
+
+[Service]
+Type=simple
+User=chocotonilitz
+WorkingDirectory=/home/chocotonilitz/Programacao/projetos/atlas
+ExecStart=/home/chocotonilitz/Programacao/projetos/atlas/bin/atlas
+Restart=always
+RestartSec=3
+EnvironmentFile=/home/chocotonilitz/Programacao/projetos/atlas/.env
+
+# Limites e Segurança do Processo
+LimitNOFILE=65535
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

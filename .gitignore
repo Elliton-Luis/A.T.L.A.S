@@ -1,0 +1,25 @@
+# Binários compilados
+bin/
+
+# Variáveis de ambiente sensíveis
+.env
+.env.local
+!.env.example
+
+# Banco de dados SQLite local
+data/*.sqlite
+data/*.sqlite-wal
+data/*.sqlite-shm
+*.sqlite
+*.sqlite-wal
+*.sqlite-shm
+
+# Arquivos temporários e logs
+*.log
+*.oga
+*.tmp
+
+# IDEs e editores
+.vscode/
+.idea/
+*.swp
