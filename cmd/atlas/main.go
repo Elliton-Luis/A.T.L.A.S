@@ -15,8 +15,10 @@ import (
 	"time"
 
 	"atlas/internal/calculator"
+	"atlas/internal/calendar"
 	"atlas/internal/config"
 	"atlas/internal/database"
+	"atlas/internal/hud"
 	"atlas/internal/nlu"
 	"atlas/internal/scheduler"
 	"atlas/internal/stt"
@@ -64,11 +66,19 @@ func main() {
 	engine := scheduler.NewEngine(cfg, db, tg, nluClient)
 	engine.Start(ctx)
 
+	// Handler do HUD visual (Telegram WebApp)
+	hudHandler := hud.NewHandler(cfg, db)
+
 	// Rotas HTTP
 	mux := http.NewServeMux()
 	mux.HandleFunc("/", app.handleRoot)
 	mux.HandleFunc("/health", app.handleHealth)
 	mux.HandleFunc("/webhook", app.handleWebhook)
+	mux.HandleFunc("/hud", hudHandler.ServeHUD)
+	mux.HandleFunc("/api/hud/data", hudHandler.HandleDataAPI)
+	mux.HandleFunc("/api/hud/routine/toggle", hudHandler.HandleToggleRoutine)
+	mux.HandleFunc("/api/hud/event/complete", hudHandler.HandleCompleteEvent)
+	mux.HandleFunc("/calendar.ics", app.handleCalendarICS)
 
 	server := &http.Server{
 		Addr:              ":" + cfg.HTTPPort,
@@ -172,6 +182,8 @@ func (a *App) processIncomingMessage(ctx context.Context, msg *telegram.Message)
 	// 1. Extração de Texto ou Voz (com Groq Whisper)
 	if msg.Text != "" {
 		inputText = strings.TrimSpace(msg.Text)
+	} else if msg.Caption != "" {
+		inputText = strings.TrimSpace(msg.Caption)
 	} else if msg.Voice != nil && msg.Voice.FileID != "" {
 		tmpPath, err := a.tg.DownloadVoiceFile(ctx, msg.Voice.FileID)
 		if err != nil {
@@ -192,6 +204,15 @@ func (a *App) processIncomingMessage(ctx context.Context, msg *telegram.Message)
 
 	if inputText == "" {
 		return
+	}
+
+	// Identificação de Mensagens Encaminhadas (Captura inteligente de texto externo)
+	if msg.ForwardSenderName != "" || msg.ForwardFrom != nil {
+		sender := msg.ForwardSenderName
+		if sender == "" && msg.ForwardFrom != nil {
+			sender = msg.ForwardFrom.FirstName
+		}
+		inputText = fmt.Sprintf("[Mensagem Encaminhada de %s]: %s", sender, inputText)
 	}
 
 	// 2. Comandos Diretos (/rotinas, /hoje, /metas, /ideias, /ajuda)
@@ -297,6 +318,8 @@ func (a *App) handleCommand(ctx context.Context, chatID int64, cmdText string) {
 
 Eu sou o seu assistente executivo e socrático. Comandos disponíveis:
 
+• ⚡ */hud* — Abrir painel visual de controle (Telegram WebApp)
+• 📅 */calendario* — Sincronizar agenda com Google / Apple Calendar (.ics)
 • 📋 */rotinas* — Ver e gerenciar rotinas proativas de mensagens
 • ⏰ */rotina <id> horario <HH:MM>* — Alterar horário de uma rotina
 • 🔄 */rotina <id> toggle* — Ativar/Desativar uma rotina
@@ -305,7 +328,17 @@ Eu sou o seu assistente executivo e socrático. Comandos disponíveis:
 • 💡 */ideias* — Ver ideias registradas e questionamentos
 • 🛡️ */backup* — Disparar backup imediato do banco
 
-Você também pode falar comigo por *texto ou áudio* naturalmente. Eu identifico compromissos, metas, ideias e questiono seus planos.`
+Você também pode falar comigo por *texto ou áudio* ou *encaminhar mensagens* de outras conversas. Eu extraio compromissos, calculo tempos de saída e questiono suas premissas.`
+		_ = a.tg.SendMessage(ctx, chatID, msg)
+
+	case "/hud", "/painel":
+		hudURL := fmt.Sprintf("%s/hud?token=%s", a.cfg.PublicURL, a.cfg.CalendarToken)
+		msg := "⚡ *ATLAS — Terminal Executivo (HUD)*\n\nToque no botão abaixo para abrir o seu painel visual de controle interativo:"
+		_ = a.tg.SendMessageWithWebApp(ctx, chatID, msg, "⚡ Abrir Painel HUD", hudURL)
+
+	case "/calendario", "/agenda":
+		calURL := fmt.Sprintf("%s/calendar.ics?token=%s", a.cfg.PublicURL, a.cfg.CalendarToken)
+		msg := fmt.Sprintf("📅 *Sincronização de Calendário ATLAS*\n\nTodos os seus compromissos com buffers determinísticos de saída (+15%%) podem ser sincronizados nativamente no seu celular (Google Calendar, Apple Calendar ou Android).\n\n🔗 *Seu link pessoal seguro de assinatura:*\n`%s`\n\n_Dica: No Google Calendar, vá em 'Configurações' > 'Adicionar agenda' > 'Do URL' e cole o link acima._", calURL)
 		_ = a.tg.SendMessage(ctx, chatID, msg)
 
 	case "/rotinas":
@@ -426,6 +459,26 @@ Você também pode falar comigo por *texto ou áudio* naturalmente. Eu identific
 	default:
 		_ = a.tg.SendMessage(ctx, chatID, "Comando não reconhecido. Digite `/ajuda` para ver as opções.")
 	}
+}
+
+func (a *App) handleCalendarICS(w http.ResponseWriter, r *http.Request) {
+	token := r.URL.Query().Get("token")
+	if token == "" || (a.cfg.CalendarToken != "" && subtle.ConstantTimeCompare([]byte(token), []byte(a.cfg.CalendarToken)) != 1) {
+		http.Error(w, "Forbidden", http.StatusForbidden)
+		return
+	}
+
+	events, err := a.db.GetUpcomingEvents(r.Context(), 50)
+	if err != nil {
+		http.Error(w, "Internal Server Error", http.StatusInternalServerError)
+		return
+	}
+
+	icsData := calendar.GenerateICS(events, a.cfg.Location)
+	w.Header().Set("Content-Type", "text/calendar; charset=utf-8")
+	w.Header().Set("Content-Disposition", "inline; filename=atlas_agenda.ics")
+	w.WriteHeader(http.StatusOK)
+	_, _ = w.Write([]byte(icsData))
 }
 
 func parseTimeFlexible(timeStr string, loc *time.Location) (time.Time, error) {

@@ -24,12 +24,30 @@ type Update struct {
 }
 
 type Message struct {
-	MessageID int    `json:"message_id"`
-	From      *User  `json:"from"`
-	Chat      Chat   `json:"chat"`
-	Date      int64  `json:"date"`
-	Text      string `json:"text"`
-	Voice     *Voice `json:"voice"`
+	MessageID         int    `json:"message_id"`
+	From              *User  `json:"from"`
+	Chat              Chat   `json:"chat"`
+	Date              int64  `json:"date"`
+	Text              string `json:"text"`
+	Voice             *Voice `json:"voice"`
+	Caption           string `json:"caption"`
+	ForwardFrom       *User  `json:"forward_from"`
+	ForwardSenderName string `json:"forward_sender_name"`
+	ForwardDate       int64  `json:"forward_date"`
+}
+
+type InlineKeyboardButton struct {
+	Text   string  `json:"text"`
+	URL    string  `json:"url,omitempty"`
+	WebApp *WebApp `json:"web_app,omitempty"`
+}
+
+type WebApp struct {
+	URL string `json:"url"`
+}
+
+type InlineKeyboardMarkup struct {
+	InlineKeyboard [][]InlineKeyboardButton `json:"inline_keyboard"`
 }
 
 type User struct {
@@ -122,6 +140,53 @@ func (c *Client) sendPlainMessage(ctx context.Context, chatID int64, text string
 		return err
 	}
 	defer resp.Body.Close()
+	return nil
+}
+
+// SendMessageWithWebApp sends a message containing an inline button to launch the WebApp HUD.
+func (c *Client) SendMessageWithWebApp(ctx context.Context, chatID int64, text, buttonText, webAppURL string) error {
+	url := fmt.Sprintf("https://api.telegram.org/bot%s/sendMessage", c.botToken)
+
+	markup := InlineKeyboardMarkup{
+		InlineKeyboard: [][]InlineKeyboardButton{
+			{
+				{
+					Text:   buttonText,
+					WebApp: &WebApp{URL: webAppURL},
+				},
+			},
+		},
+	}
+
+	payload := map[string]interface{}{
+		"chat_id":      chatID,
+		"text":         text,
+		"parse_mode":   "Markdown",
+		"reply_markup": markup,
+	}
+
+	body, err := json.Marshal(payload)
+	if err != nil {
+		return fmt.Errorf("marshal sendMessageWithWebApp: %w", err)
+	}
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(body))
+	if err != nil {
+		return fmt.Errorf("create req: %w", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return fmt.Errorf("do sendMessageWithWebApp: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		respBody, _ := io.ReadAll(resp.Body)
+		return fmt.Errorf("telegram sendMessageWithWebApp status %d: %s", resp.StatusCode, string(respBody))
+	}
+
 	return nil
 }
 

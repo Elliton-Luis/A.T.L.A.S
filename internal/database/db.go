@@ -493,6 +493,53 @@ func (db *DB) MarkCompletionNotified(ctx context.Context, id int64) error {
 	return err
 }
 
+// GetUpcomingEvents fetches pending and upcoming events for the calendar.
+func (db *DB) GetUpcomingEvents(ctx context.Context, limit int) ([]Evento, error) {
+	rows, err := db.QueryContext(ctx, `
+		SELECT id, descricao, horario_oficial, horario_buffer_1, horario_buffer_2, notificado_buffer_1, notificado_buffer_2, notificado_conclusao, status, criado_em
+		FROM eventos
+		WHERE status != 'concluido'
+		ORDER BY horario_oficial ASC
+		LIMIT ?
+	`, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var list []Evento
+	for rows.Next() {
+		var e Evento
+		if err := rows.Scan(&e.ID, &e.Descricao, &e.HorarioOficial, &e.HorarioBuffer1, &e.HorarioBuffer2, &e.NotificadoBuffer1, &e.NotificadoBuffer2, &e.NotificadoConclusao, &e.Status, &e.CriadoEm); err != nil {
+			return nil, err
+		}
+		list = append(list, e)
+	}
+	return list, nil
+}
+
+// MarkEventStatus updates an event's status (e.g. 'concluido', 'esquecido').
+func (db *DB) MarkEventStatus(ctx context.Context, id int64, status string) error {
+	_, err := db.ExecContext(ctx, "UPDATE eventos SET status = ? WHERE id = ?", status, id)
+	return err
+}
+
+// UpdateGoalProgress updates a goal's completion percentage.
+func (db *DB) UpdateGoalProgress(ctx context.Context, id int64, progress int) error {
+	if progress > 100 {
+		progress = 100
+	}
+	if progress < 0 {
+		progress = 0
+	}
+	status := "ativo"
+	if progress == 100 {
+		status = "concluido"
+	}
+	_, err := db.ExecContext(ctx, "UPDATE objetivos SET progresso_pct = ?, status = ? WHERE id = ?", progress, status, id)
+	return err
+}
+
 func CleanWhitespace(s string) string {
 	return strings.TrimSpace(s)
 }

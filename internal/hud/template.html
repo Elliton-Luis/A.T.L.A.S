@@ -1,0 +1,611 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+  <title>ATLAS HUD — Terminal Executivo</title>
+  <script src="https://telegram.org/js/telegram-web-app.js"></script>
+  <style>
+    :root {
+      --bg: #070a13;
+      --card-bg: rgba(17, 24, 39, 0.85);
+      --card-border: rgba(255, 255, 255, 0.08);
+      --text-main: #f3f4f6;
+      --text-muted: #9ca3af;
+      --accent-cyan: #06b6d4;
+      --accent-emerald: #10b981;
+      --accent-amber: #f59e0b;
+      --accent-rose: #f43f5e;
+      --glow-cyan: rgba(6, 182, 212, 0.2);
+    }
+
+    * {
+      box-sizing: border-box;
+      margin: 0;
+      padding: 0;
+      -webkit-tap-highlight-color: transparent;
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", sans-serif;
+    }
+
+    body {
+      background-color: var(--bg);
+      background-image: radial-gradient(circle at 50% 0%, rgba(6, 182, 212, 0.12), transparent 40%);
+      color: var(--text-main);
+      padding: 16px;
+      min-height: 100vh;
+      font-size: 14px;
+    }
+
+    .container {
+      max-width: 540px;
+      margin: 0 auto;
+      display: flex;
+      flex-direction: column;
+      gap: 16px;
+    }
+
+    /* Header */
+    .hud-header {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      padding: 12px 16px;
+      background: var(--card-bg);
+      border: 1px solid var(--card-border);
+      border-radius: 14px;
+      backdrop-filter: blur(10px);
+    }
+
+    .hud-title {
+      font-weight: 800;
+      font-size: 18px;
+      letter-spacing: 1px;
+      background: linear-gradient(90deg, #fff, var(--accent-cyan));
+      -webkit-background-clip: text;
+      -webkit-text-fill-color: transparent;
+    }
+
+    .status-badge {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      font-size: 11px;
+      font-weight: 600;
+      padding: 4px 10px;
+      border-radius: 20px;
+      background: rgba(16, 185, 129, 0.15);
+      color: var(--accent-emerald);
+      border: 1px solid rgba(16, 185, 129, 0.3);
+    }
+
+    .status-dot {
+      width: 6px;
+      height: 6px;
+      border-radius: 50%;
+      background: var(--accent-emerald);
+      box-shadow: 0 0 8px var(--accent-emerald);
+      animation: pulse 2s infinite;
+    }
+
+    @keyframes pulse {
+      0%, 100% { opacity: 1; }
+      50% { opacity: 0.4; }
+    }
+
+    /* KPI Grid */
+    .kpi-grid {
+      display: grid;
+      grid-template-columns: repeat(3, 1fr);
+      gap: 10px;
+    }
+
+    .kpi-card {
+      background: var(--card-bg);
+      border: 1px solid var(--card-border);
+      border-radius: 12px;
+      padding: 12px 8px;
+      text-align: center;
+      backdrop-filter: blur(8px);
+    }
+
+    .kpi-val {
+      font-size: 20px;
+      font-weight: 800;
+      color: #fff;
+      margin-bottom: 2px;
+    }
+
+    .kpi-label {
+      font-size: 11px;
+      color: var(--text-muted);
+      text-transform: uppercase;
+      letter-spacing: 0.5px;
+    }
+
+    /* Section Cards */
+    .card {
+      background: var(--card-bg);
+      border: 1px solid var(--card-border);
+      border-radius: 14px;
+      padding: 16px;
+      backdrop-filter: blur(10px);
+    }
+
+    .card-title {
+      font-size: 14px;
+      font-weight: 700;
+      text-transform: uppercase;
+      letter-spacing: 0.8px;
+      color: var(--accent-cyan);
+      margin-bottom: 14px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+    }
+
+    /* Timeline / Events */
+    .event-item {
+      background: rgba(255, 255, 255, 0.03);
+      border-left: 3px solid var(--accent-cyan);
+      border-radius: 8px;
+      padding: 12px;
+      margin-bottom: 10px;
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
+    }
+
+    .event-header {
+      display: flex;
+      justify-content: space-between;
+      align-items: flex-start;
+    }
+
+    .event-desc {
+      font-weight: 600;
+      font-size: 14px;
+      color: #fff;
+    }
+
+    .event-buffers {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+      font-size: 11px;
+      margin-top: 4px;
+    }
+
+    .buffer-pill {
+      padding: 3px 8px;
+      border-radius: 6px;
+      background: rgba(255, 255, 255, 0.06);
+      color: var(--text-muted);
+    }
+
+    .buffer-pill.highlight {
+      background: rgba(6, 182, 212, 0.15);
+      color: var(--accent-cyan);
+      border: 1px solid rgba(6, 182, 212, 0.3);
+    }
+
+    .btn-complete {
+      background: rgba(16, 185, 129, 0.2);
+      border: 1px solid rgba(16, 185, 129, 0.4);
+      color: var(--accent-emerald);
+      padding: 4px 10px;
+      border-radius: 6px;
+      font-size: 11px;
+      cursor: pointer;
+      font-weight: 600;
+      transition: all 0.2s;
+    }
+
+    .btn-complete:hover {
+      background: var(--accent-emerald);
+      color: #000;
+    }
+
+    /* Metas */
+    .goal-item {
+      background: rgba(255, 255, 255, 0.03);
+      border-radius: 8px;
+      padding: 12px;
+      margin-bottom: 10px;
+    }
+
+    .goal-title {
+      font-weight: 600;
+      margin-bottom: 6px;
+      display: flex;
+      justify-content: space-between;
+    }
+
+    .progress-bar-bg {
+      height: 6px;
+      background: rgba(255, 255, 255, 0.1);
+      border-radius: 4px;
+      overflow: hidden;
+      margin-top: 6px;
+    }
+
+    .progress-bar-fill {
+      height: 100%;
+      background: linear-gradient(90deg, var(--accent-cyan), var(--accent-emerald));
+      border-radius: 4px;
+      transition: width 0.3s;
+    }
+
+    /* Ideias Socráticas */
+    .idea-item {
+      background: rgba(255, 255, 255, 0.03);
+      border-radius: 8px;
+      padding: 12px;
+      margin-bottom: 10px;
+      border-left: 3px solid var(--accent-amber);
+    }
+
+    .idea-title {
+      font-weight: 600;
+      color: #fff;
+      margin-bottom: 4px;
+    }
+
+    .idea-challenge {
+      font-size: 12px;
+      font-style: italic;
+      color: var(--accent-amber);
+      background: rgba(245, 158, 11, 0.08);
+      padding: 8px;
+      border-radius: 6px;
+      margin-top: 6px;
+    }
+
+    /* Rotinas Toggle */
+    .routine-row {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      padding: 10px 0;
+      border-bottom: 1px solid rgba(255, 255, 255, 0.05);
+    }
+
+    .routine-row:last-child {
+      border-bottom: none;
+    }
+
+    .routine-info {
+      display: flex;
+      flex-direction: column;
+      gap: 2px;
+    }
+
+    .routine-name {
+      font-weight: 600;
+      font-size: 13px;
+    }
+
+    .routine-time {
+      font-size: 11px;
+      color: var(--accent-cyan);
+    }
+
+    .toggle-switch {
+      position: relative;
+      width: 44px;
+      height: 24px;
+    }
+
+    .toggle-switch input {
+      opacity: 0;
+      width: 0;
+      height: 0;
+    }
+
+    .slider {
+      position: absolute;
+      cursor: pointer;
+      top: 0; left: 0; right: 0; bottom: 0;
+      background-color: rgba(255, 255, 255, 0.15);
+      transition: .3s;
+      border-radius: 24px;
+    }
+
+    .slider:before {
+      position: absolute;
+      content: "";
+      height: 18px;
+      width: 18px;
+      left: 3px;
+      bottom: 3px;
+      background-color: white;
+      transition: .3s;
+      border-radius: 50%;
+    }
+
+    input:checked + .slider {
+      background-color: var(--accent-emerald);
+    }
+
+    input:checked + .slider:before {
+      transform: translateX(20px);
+    }
+
+    /* Actions */
+    .action-btn {
+      width: 100%;
+      background: linear-gradient(90deg, rgba(6, 182, 212, 0.2), rgba(16, 185, 129, 0.2));
+      border: 1px solid rgba(6, 182, 212, 0.4);
+      color: #fff;
+      font-weight: 700;
+      padding: 12px;
+      border-radius: 10px;
+      cursor: pointer;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 8px;
+      font-size: 13px;
+    }
+
+    .empty-state {
+      text-align: center;
+      color: var(--text-muted);
+      font-size: 12px;
+      padding: 16px 0;
+    }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <!-- Header -->
+    <div class="hud-header">
+      <div>
+        <div class="hud-title">ATLAS // HUD</div>
+        <div id="liveClock" style="font-size: 11px; color: var(--text-muted); margin-top: 2px;">Sincronizando...</div>
+      </div>
+      <div class="status-badge">
+        <span class="status-dot"></span>
+        SISTEMA ONLINE
+      </div>
+    </div>
+
+    <!-- KPI Grid -->
+    <div class="kpi-grid">
+      <div class="kpi-card">
+        <div class="kpi-val" id="kpiEvents">0</div>
+        <div class="kpi-label">Hoje</div>
+      </div>
+      <div class="kpi-card">
+        <div class="kpi-val" id="kpiGoals">0</div>
+        <div class="kpi-label">Metas</div>
+      </div>
+      <div class="kpi-card">
+        <div class="kpi-val" id="kpiIdeas">0</div>
+        <div class="kpi-label">Ideias</div>
+      </div>
+    </div>
+
+    <!-- Timeline do Dia -->
+    <div class="card">
+      <div class="card-title">
+        <span>📅 Linha do Tempo (+15% Buffer)</span>
+      </div>
+      <div id="eventsList">
+        <div class="empty-state">Carregando compromissos...</div>
+      </div>
+    </div>
+
+    <!-- Metas Ativas -->
+    <div class="card">
+      <div class="card-title">
+        <span>🎯 Metas & Objetivos</span>
+      </div>
+      <div id="goalsList">
+        <div class="empty-state">Carregando metas...</div>
+      </div>
+    </div>
+
+    <!-- Ideias & Desafios Socráticos -->
+    <div class="card">
+      <div class="card-title">
+        <span>💡 Ideias & Questionamentos</span>
+      </div>
+      <div id="ideasList">
+        <div class="empty-state">Carregando ideias...</div>
+      </div>
+    </div>
+
+    <!-- Rotinas Proativas -->
+    <div class="card">
+      <div class="card-title">
+        <span>⚡ Rotinas Proativas</span>
+      </div>
+      <div id="routinesList">
+        <div class="empty-state">Carregando rotinas...</div>
+      </div>
+    </div>
+
+    <!-- Sincronização Calendário -->
+    <div class="card">
+      <button class="action-btn" onclick="copyCalendarLink()">
+        🗓️ Sincronizar com Google / Apple Calendar
+      </button>
+      <div style="font-size: 10px; color: var(--text-muted); text-align: center; margin-top: 8px;">
+        Clique para copiar o link seguro (.ics) de assinatura direta no celular
+      </div>
+    </div>
+  </div>
+
+  <script>
+    const tg = window.Telegram?.WebApp;
+    if (tg) {
+      tg.ready();
+      tg.expand();
+    }
+
+    // Live clock
+    function updateClock() {
+      const now = new Date();
+      document.getElementById('liveClock').innerText = now.toLocaleDateString('pt-BR', {
+        weekday: 'short', day: '2-digit', month: 'short'
+      }) + ' • ' + now.toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit', second: '2-digit' });
+    }
+    setInterval(updateClock, 1000);
+    updateClock();
+
+    // Query string token or Telegram WebApp initData
+    const urlParams = new URLSearchParams(window.location.search);
+    const token = urlParams.get('token') || '';
+    const initData = tg?.initData || '';
+
+    function getAuthHeaders() {
+      return {
+        'Content-Type': 'application/json',
+        'X-Telegram-Init-Data': initData,
+        'X-Atlas-Token': token
+      };
+    }
+
+    async function loadData() {
+      try {
+        const res = await fetch('/api/hud/data?token=' + encodeURIComponent(token), {
+          headers: getAuthHeaders()
+        });
+        if (!res.ok) throw new Error('Não autorizado');
+        const data = await res.json();
+        renderHUD(data);
+      } catch (err) {
+        document.getElementById('eventsList').innerHTML = '<div class="empty-state">Acesso restrito ao proprietário.</div>';
+      }
+    }
+
+    function renderHUD(data) {
+      document.getElementById('kpiEvents').innerText = data.events?.length || 0;
+      document.getElementById('kpiGoals').innerText = data.goals?.length || 0;
+      document.getElementById('kpiIdeas').innerText = data.ideas?.length || 0;
+
+      // Render Events
+      const evContainer = document.getElementById('eventsList');
+      if (!data.events || data.events.length === 0) {
+        evContainer.innerHTML = '<div class="empty-state">Nenhum compromisso agendado para hoje.</div>';
+      } else {
+        evContainer.innerHTML = data.events.map(ev => `
+          <div class="event-item">
+            <div class="event-header">
+              <span class="event-desc">${escapeHtml(ev.Descricao)}</span>
+              <button class="btn-complete" onclick="completeEvent(${ev.ID})">✓ Concluir</button>
+            </div>
+            <div class="event-buffers">
+              <span class="buffer-pill">🛁 Preparo: <b>${formatTime(ev.HorarioBuffer1)}</b></span>
+              <span class="buffer-pill highlight">🚗 Saída: <b>${formatTime(ev.HorarioBuffer2)}</b></span>
+              <span class="buffer-pill">⏰ Oficial: <b>${formatTime(ev.HorarioOficial)}</b></span>
+            </div>
+          </div>
+        `).join('');
+      }
+
+      // Render Goals
+      const goalsContainer = document.getElementById('goalsList');
+      if (!data.goals || data.goals.length === 0) {
+        goalsContainer.innerHTML = '<div class="empty-state">Nenhuma meta ativa. Defina uma pelo Telegram!</div>';
+      } else {
+        goalsContainer.innerHTML = data.goals.map(g => `
+          <div class="goal-item">
+            <div class="goal-title">
+              <span>${escapeHtml(g.Titulo)}</span>
+              <span style="color: var(--accent-emerald);">${g.ProgressoPct}%</span>
+            </div>
+            <div class="progress-bar-bg">
+              <div class="progress-bar-fill" style="width: ${g.ProgressoPct}%"></div>
+            </div>
+          </div>
+        `).join('');
+      }
+
+      // Render Ideas
+      const ideasContainer = document.getElementById('ideasList');
+      if (!data.ideas || data.ideas.length === 0) {
+        ideasContainer.innerHTML = '<div class="empty-state">Nenhuma ideia anotada recentemente.</div>';
+      } else {
+        ideasContainer.innerHTML = data.ideas.map(i => `
+          <div class="idea-item">
+            <div class="idea-title">💡 ${escapeHtml(i.Titulo)}</div>
+            <div style="color: var(--text-muted); font-size: 12px;">${escapeHtml(i.Conteudo)}</div>
+            <div class="idea-challenge">⚔️ ${escapeHtml(i.QuestionamentoSocratico)}</div>
+          </div>
+        `).join('');
+      }
+
+      // Render Routines
+      const routinesContainer = document.getElementById('routinesList');
+      if (!data.routines || data.routines.length === 0) {
+        routinesContainer.innerHTML = '<div class="empty-state">Nenhuma rotina cadastrada.</div>';
+      } else {
+        routinesContainer.innerHTML = data.routines.map(r => `
+          <div class="routine-row">
+            <div class="routine-info">
+              <span class="routine-name">${formatRoutineName(r.Nome)}</span>
+              <span class="routine-time">⏰ Disparo às ${r.Horario}</span>
+            </div>
+            <label class="toggle-switch">
+              <input type="checkbox" ${r.Ativo ? 'checked' : ''} onchange="toggleRoutine(${r.ID})">
+              <span class="slider"></span>
+            </label>
+          </div>
+        `).join('');
+      }
+    }
+
+    async function toggleRoutine(id) {
+      await fetch('/api/hud/routine/toggle', {
+        method: 'POST',
+        headers: getAuthHeaders(),
+        body: JSON.stringify({ id: id })
+      });
+      loadData();
+    }
+
+    async function completeEvent(id) {
+      await fetch('/api/hud/event/complete', {
+        method: 'POST',
+        headers: getAuthHeaders(),
+        body: JSON.stringify({ id: id })
+      });
+      loadData();
+    }
+
+    function copyCalendarLink() {
+      const calUrl = window.location.origin + '/calendar.ics?token=' + encodeURIComponent(token);
+      navigator.clipboard.writeText(calUrl).then(() => {
+        alert('Link do calendário copiado com sucesso! Adicione no Google Calendar ou no app Calendário do seu celular.');
+      }).catch(() => {
+        prompt('Copie o link abaixo e cole no seu app de calendário:', calUrl);
+      });
+    }
+
+    function formatTime(str) {
+      if (!str) return '--:--';
+      const parts = str.split(' ');
+      if (parts.length > 1) {
+        const hm = parts[1].split(':');
+        return hm[0] + ':' + hm[1];
+      }
+      return str;
+    }
+
+    function formatRoutineName(name) {
+      if (name === 'briefing_matinal') return '☀️ Briefing Matinal';
+      if (name === 'checkin_tarde') return '⚡ Check-in da Tarde';
+      if (name === 'review_noturno') return '🌙 Review Noturno';
+      return name;
+    }
+
+    function escapeHtml(s) {
+      if (!s) return '';
+      return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+    }
+
+    loadData();
+  </script>
+</body>
+</html>

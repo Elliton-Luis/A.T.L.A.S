@@ -20,6 +20,8 @@ type Config struct {
 	Location            *time.Location
 	HTTPPort            string
 	BackupHour          string
+	CalendarToken       string
+	PublicURL           string
 }
 
 // Load reads .env (if present) and populates the Config from environment variables.
@@ -54,6 +56,8 @@ func Load(envPath string) (*Config, error) {
 		Location:            loc,
 		HTTPPort:            getEnv("HTTP_PORT", "8080"),
 		BackupHour:          getEnv("BACKUP_HOUR", "03:00"),
+		CalendarToken:       getEnv("CALENDAR_TOKEN", "atlas_cal_secret_token"),
+		PublicURL:           strings.TrimSuffix(getEnv("PUBLIC_URL", "http://localhost:8080"), "/"),
 	}
 
 	return cfg, nil
