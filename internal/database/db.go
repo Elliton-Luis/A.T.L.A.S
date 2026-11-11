@@ -313,6 +313,40 @@ func (db *DB) InsertRoutine(ctx context.Context, nome, horario, tipo string, pro
 	return res.LastInsertId()
 }
 
+// DeleteRoutineByName searches and removes a routine by matching text.
+func (db *DB) DeleteRoutineByName(ctx context.Context, term string) (string, error) {
+	var id int64
+	var nome string
+	err := db.QueryRowContext(ctx, "SELECT id, nome FROM rotinas_proativas WHERE nome LIKE ? OR prompt_custom LIKE ? LIMIT 1", "%"+term+"%", "%"+term+"%").Scan(&id, &nome)
+	if err != nil {
+		return "", err
+	}
+	_, err = db.ExecContext(ctx, "DELETE FROM rotinas_proativas WHERE id = ?", id)
+	return nome, err
+}
+
+// DeleteEvento removes an event by ID.
+func (db *DB) DeleteEvento(ctx context.Context, id int64) error {
+	_, err := db.ExecContext(ctx, "DELETE FROM eventos WHERE id = ?", id)
+	return err
+}
+
+// FindEventoByDesc searches an active event by description term.
+func (db *DB) FindEventoByDesc(ctx context.Context, term string) (int64, string, error) {
+	var id int64
+	var desc string
+	err := db.QueryRowContext(ctx, "SELECT id, descricao FROM eventos WHERE descricao LIKE ? AND status = 'pendente' ORDER BY id DESC LIMIT 1", "%"+term+"%").Scan(&id, &desc)
+	return id, desc, err
+}
+
+// FindGoalByTitle searches an active goal by title term.
+func (db *DB) FindGoalByTitle(ctx context.Context, term string) (int64, string, error) {
+	var id int64
+	var title string
+	err := db.QueryRowContext(ctx, "SELECT id, titulo FROM objetivos WHERE titulo LIKE ? AND status = 'ativo' ORDER BY id DESC LIMIT 1", "%"+term+"%").Scan(&id, &title)
+	return id, title, err
+}
+
 // DeleteRoutine deletes a routine by ID.
 func (db *DB) DeleteRoutine(ctx context.Context, id int64) error {
 	_, err := db.ExecContext(ctx, "DELETE FROM rotinas_proativas WHERE id = ?", id)

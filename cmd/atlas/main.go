@@ -339,6 +339,9 @@ func (a *App) processIncomingMessage(ctx context.Context, msg *telegram.Message)
 			}
 		}
 
+	case "acao":
+		reply = a.executeAppAction(ctx, intent)
+
 	default: // "conversa"
 		reply = intent.Resposta
 		if reply == "" {
@@ -348,6 +351,132 @@ func (a *App) processIncomingMessage(ctx context.Context, msg *telegram.Message)
 
 	_ = a.tg.SendMessage(ctx, chatID, reply)
 	_ = a.db.RecordHistory(ctx, "assistant", reply)
+}
+
+func (a *App) executeAppAction(ctx context.Context, intent *nlu.IntentResult) string {
+	switch intent.Acao {
+	case "apagar_rotina":
+		if intent.ID > 0 {
+			if err := a.db.DeleteRoutine(ctx, intent.ID); err == nil {
+				return fmt.Sprintf("🗑️ Lembrete [%d] apagado com sucesso.", intent.ID)
+			}
+		}
+		if intent.Termo != "" {
+			if nome, err := a.db.DeleteRoutineByName(ctx, intent.Termo); err == nil {
+				return fmt.Sprintf("🗑️ Lembrete '%s' apagado com sucesso.", nome)
+			}
+		}
+		return "⚠️ Não encontrei o lembrete especificado para apagar."
+
+	case "alterar_rotina":
+		if intent.Horario == "" {
+			return "⚠️ Por favor, especifique o novo horário (ex: 08:30)."
+		}
+		if intent.ID > 0 {
+			if err := a.db.UpdateRoutineTime(ctx, intent.ID, intent.Horario); err == nil {
+				return fmt.Sprintf("⏰ Horário da rotina [%d] atualizado para *%s*.", intent.ID, intent.Horario)
+			}
+		}
+		return "⚠️ Não foi possível alterar o horário da rotina."
+
+	case "toggle_rotina":
+		if intent.ID > 0 {
+			if active, err := a.db.ToggleRoutine(ctx, intent.ID); err == nil {
+				status := "desativada 🔴"
+				if active {
+					status = "ativada 🟢"
+				}
+				return fmt.Sprintf("Rotina [%d] %s.", intent.ID, status)
+			}
+		}
+		return "⚠️ Não consegui alterar o status da rotina."
+
+	case "concluir_evento":
+		if intent.ID > 0 {
+			_ = a.db.MarkEventStatus(ctx, intent.ID, "concluido")
+			return fmt.Sprintf("✅ Compromisso [%d] marcado como concluído.", intent.ID)
+		}
+		if intent.Termo != "" {
+			id, desc, err := a.db.FindEventoByDesc(ctx, intent.Termo)
+			if err == nil {
+				_ = a.db.MarkEventStatus(ctx, id, "concluido")
+				return fmt.Sprintf("✅ Compromisso *%s* marcado como concluído com sucesso.", desc)
+			}
+		}
+		return "⚠️ Não localizei o compromisso pendente para marcar como concluído."
+
+	case "apagar_evento":
+		if intent.ID > 0 {
+			_ = a.db.DeleteEvento(ctx, intent.ID)
+			return fmt.Sprintf("🗑️ Compromisso [%d] excluído da sua agenda.", intent.ID)
+		}
+		if intent.Termo != "" {
+			id, desc, err := a.db.FindEventoByDesc(ctx, intent.Termo)
+			if err == nil {
+				_ = a.db.DeleteEvento(ctx, id)
+				return fmt.Sprintf("🗑️ Compromisso *%s* excluído da sua agenda.", desc)
+			}
+		}
+		return "⚠️ Não localizei o compromisso para excluir."
+
+	case "atualizar_meta":
+		if intent.Termo != "" {
+			id, title, err := a.db.FindGoalByTitle(ctx, intent.Termo)
+			if err == nil {
+				prog := intent.Progresso
+				if prog <= 0 {
+					prog = 100 // se disse "completei a meta"
+				}
+				_ = a.db.UpdateGoalProgress(ctx, id, prog)
+				return fmt.Sprintf("🎯 Meta *%s* atualizada para *%d%%* de progresso.", title, prog)
+			}
+		}
+		return "⚠️ Não localizei a meta ativa para atualizar."
+
+	case "fazer_backup":
+		caption := fmt.Sprintf("🛡️ Backup solicitado em %s", time.Now().In(a.cfg.Location).Format("2006-01-02 15:04:05"))
+		if err := a.tg.SendDocument(ctx, a.cfg.TelegramChatID, a.cfg.DBPath, caption); err == nil {
+			return "🛡️ Arquivo de backup do banco de dados enviado acima."
+		}
+		return "⚠️ Falha ao gerar o arquivo de backup."
+
+	case "listar_agenda":
+		now := time.Now().In(a.cfg.Location)
+		todayStr := now.Format("2006-01-02")
+		events, _ := a.db.GetEventsForDay(ctx, todayStr)
+		if len(events) == 0 {
+			return fmt.Sprintf("📅 Não há compromissos agendados para hoje (%s).", todayStr)
+		}
+		var sb strings.Builder
+		sb.WriteString(fmt.Sprintf("📅 *Agenda de Hoje (%s):*\n\n", todayStr))
+		for _, ev := range events {
+			sb.WriteString(fmt.Sprintf("📌 *%s*\n  ⏰ Oficial: %s | 🚗 Saída: %s\n\n", ev.Descricao, ev.HorarioOficial, ev.HorarioBuffer2))
+		}
+		return sb.String()
+
+	case "listar_lembretes":
+		routines, _ := a.db.GetAllRoutines(ctx)
+		if len(routines) == 0 {
+			return "Nenhum lembrete ou rotina cadastrada."
+		}
+		var sb strings.Builder
+		sb.WriteString("⏰ *Lembretes e Rotinas Diárias:*\n\n")
+		for _, r := range routines {
+			status := "🟢"
+			if r.Ativo == 0 {
+				status = "🔴"
+			}
+			desc := r.Nome
+			if r.PromptCustom != nil && *r.PromptCustom != "" {
+				desc = fmt.Sprintf("\"%s\"", *r.PromptCustom)
+			}
+			sb.WriteString(fmt.Sprintf("%s *[%d]* às *%s* — %s\n", status, r.ID, r.Horario, desc))
+		}
+		return sb.String()
+
+	default:
+		return "Comando executado com sucesso."
+	}
 }
 
 func (a *App) handleCommand(ctx context.Context, chatID int64, cmdText string) {

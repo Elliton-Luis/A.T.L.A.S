@@ -23,7 +23,11 @@ type Client struct {
 }
 
 type IntentResult struct {
-	Tipo                      string `json:"tipo"`
+	Tipo                      string `json:"tipo"` // acao, evento, ideia, objetivo, lembrete_diario, conversa
+	Acao                      string `json:"acao,omitempty"` // apagar_rotina, alterar_rotina, toggle_rotina, concluir_evento, apagar_evento, atualizar_meta, fazer_backup, listar_agenda, listar_lembretes
+	ID                        int64  `json:"id,omitempty"`
+	Termo                     string `json:"termo,omitempty"`
+	Progresso                 int    `json:"progresso,omitempty"`
 	Complexidade              string `json:"complexidade,omitempty"` // "simples" ou "pesada"
 	Titulo                    string `json:"titulo,omitempty"`
 	Conteudo                  string `json:"conteudo,omitempty"`
@@ -34,7 +38,6 @@ type IntentResult struct {
 	EstimativaPreparoMin      int    `json:"estimativa_preparo_min,omitempty"`
 	Prazo                     string `json:"prazo,omitempty"`
 	Resposta                  string `json:"resposta,omitempty"`
-	Acao                      string `json:"acao,omitempty"`
 	Horario                   string `json:"horario,omitempty"`
 	Nome                      string `json:"nome,omitempty"`
 	Mensagem                  string `json:"mensagem,omitempty"`
@@ -168,7 +171,17 @@ Indique sempre "complexidade": "pesada" se a solicitação for uma pesquisa apro
   "mensagem": "Mensagem exata a ser disparada todo dia"
 }
 
-5. Para conversa, reflexão ou debate geral (ou perguntas sobre o que você faz):
+5. Para ações e comandos operacionais do aplicativo (apagar/alterar lembretes, concluir/excluir eventos, atualizar metas, backup, ver agenda):
+{
+  "tipo": "acao",
+  "acao": "apagar_rotina" ou "alterar_rotina" ou "toggle_rotina" ou "concluir_evento" ou "apagar_evento" ou "atualizar_meta" ou "fazer_backup" ou "listar_agenda" ou "listar_lembretes",
+  "id": 0 (ou o número do ID se mencionado),
+  "termo": "palavra-chave da meta, lembrete ou evento (ex: 'creatina', 'dentista', 'faturamento')",
+  "horario": "HH:MM" (se for alterar horário),
+  "progresso": 80 (número de 0 a 100 se for atualizar meta)
+}
+
+6. Para conversa, reflexão ou debate geral (ou perguntas sobre o que você faz):
 {
   "tipo": "conversa",
   "complexidade": "simples" ou "pesada",
