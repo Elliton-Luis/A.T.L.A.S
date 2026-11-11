@@ -108,7 +108,49 @@ func NewClient(groqKey, nvidiaKey, nvidiaModel string, maxTokensQuick, maxTokens
 	}
 }
 
-var jsonBlockRegex = regexp.MustCompile(`(?s)\{.*\}`)
+var (
+	jsonBlockRegex = regexp.MustCompile(`(?s)\{.*\}`)
+	respostaRegex  = regexp.MustCompile(`(?s)"resposta"\s*:\s*"((?:[^"\\]|\\.)*)`)
+)
+
+// SanitizeHumanResponse strips JSON wrappers, escaped quotes and backslashes, ensuring clean human text.
+func SanitizeHumanResponse(s string) string {
+	s = strings.TrimSpace(s)
+	if s == "" {
+		return s
+	}
+
+	// If contains JSON artifacts like "resposta": "...", extract the inner message
+	if strings.Contains(s, `"resposta"`) {
+		if m := respostaRegex.FindStringSubmatch(s); len(m) > 1 {
+			s = m[1]
+		}
+	}
+
+	// Unescape JSON escape sequences to real formatting
+	s = strings.ReplaceAll(s, `\n`, "\n")
+	s = strings.ReplaceAll(s, `\"`, `"`)
+	s = strings.ReplaceAll(s, `\\`, `\`)
+	s = strings.ReplaceAll(s, `\t`, "  ")
+
+	// If string still starts with JSON curly brace, strip lines that look like JSON keys
+	if strings.HasPrefix(s, "{") || strings.HasPrefix(s, "```") {
+		lines := strings.Split(s, "\n")
+		var cleanLines []string
+		for _, line := range lines {
+			trimmed := strings.TrimSpace(line)
+			if strings.HasPrefix(trimmed, "```") || trimmed == "{" || trimmed == "}" ||
+				strings.HasPrefix(trimmed, `"tipo":`) || strings.HasPrefix(trimmed, `"complexidade":`) ||
+				strings.HasPrefix(trimmed, `"resposta":`) {
+				continue
+			}
+			cleanLines = append(cleanLines, line)
+		}
+		s = strings.Join(cleanLines, "\n")
+	}
+
+	return strings.TrimSpace(s)
+}
 
 // ParseIntent sends the user's message along with sliding history to NLU (Groq LPU ultra-fast / NVIDIA fallback).
 func (c *Client) ParseIntent(ctx context.Context, text, currentDatetime string, history []database.ChatMessage) (*IntentResult, error) {
@@ -233,7 +275,7 @@ Indique sempre "complexidade": "pesada" se a solicitação for uma pesquisa apro
 		// Fallback as general conversation
 		return &IntentResult{
 			Tipo:     "conversa",
-			Resposta: strings.TrimSpace(rawResp),
+			Resposta: SanitizeHumanResponse(rawResp),
 		}, nil
 	}
 
@@ -241,10 +283,11 @@ Indique sempre "complexidade": "pesada" se a solicitação for uma pesquisa apro
 	if err := json.Unmarshal([]byte(match), &res); err != nil {
 		return &IntentResult{
 			Tipo:     "conversa",
-			Resposta: strings.TrimSpace(rawResp),
+			Resposta: SanitizeHumanResponse(rawResp),
 		}, nil
 	}
 
+	res.Resposta = SanitizeHumanResponse(res.Resposta)
 	return &res, nil
 }
 

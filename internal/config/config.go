@@ -47,9 +47,9 @@ func Load(envPath string) (*Config, error) {
 		}
 	}
 
-	maxQuick, _ := strconv.Atoi(getEnv("MAX_TOKENS_QUICK", "250"))
+	maxQuick, _ := strconv.Atoi(getEnv("MAX_TOKENS_QUICK", "450"))
 	if maxQuick <= 0 {
-		maxQuick = 250
+		maxQuick = 450
 	}
 	maxHeavy, _ := strconv.Atoi(getEnv("MAX_TOKENS_HEAVY", "800"))
 	if maxHeavy <= 0 {

@@ -350,6 +350,8 @@ func (a *App) processIncomingMessage(ctx context.Context, msg *telegram.Message)
 		}
 	}
 
+	reply = nlu.SanitizeHumanResponse(reply)
+
 	_ = a.tg.SendMessage(ctx, chatID, reply)
 	_ = a.db.RecordHistory(ctx, "assistant", reply)
 }
