@@ -22,6 +22,9 @@ type Config struct {
 	BackupHour          string
 	CalendarToken       string
 	PublicURL           string
+	MaxTokensQuick      int
+	MaxTokensHeavy      int
+	HistoryLimit        int
 }
 
 // Load reads .env (if present) and populates the Config from environment variables.
@@ -44,6 +47,19 @@ func Load(envPath string) (*Config, error) {
 		}
 	}
 
+	maxQuick, _ := strconv.Atoi(getEnv("MAX_TOKENS_QUICK", "250"))
+	if maxQuick <= 0 {
+		maxQuick = 250
+	}
+	maxHeavy, _ := strconv.Atoi(getEnv("MAX_TOKENS_HEAVY", "800"))
+	if maxHeavy <= 0 {
+		maxHeavy = 800
+	}
+	histLimit, _ := strconv.Atoi(getEnv("CHAT_HISTORY_LIMIT", "4"))
+	if histLimit <= 0 {
+		histLimit = 4
+	}
+
 	cfg := &Config{
 		TelegramBotToken:    getEnv("TELEGRAM_BOT_TOKEN", ""),
 		TelegramSecretToken: getEnv("TELEGRAM_SECRET_TOKEN", ""),
@@ -58,6 +74,9 @@ func Load(envPath string) (*Config, error) {
 		BackupHour:          getEnv("BACKUP_HOUR", "03:00"),
 		CalendarToken:       getEnv("CALENDAR_TOKEN", "atlas_cal_secret_token"),
 		PublicURL:           strings.TrimSuffix(getEnv("PUBLIC_URL", "http://localhost:8080"), "/"),
+		MaxTokensQuick:      maxQuick,
+		MaxTokensHeavy:      maxHeavy,
+		HistoryLimit:        histLimit,
 	}
 
 	return cfg, nil

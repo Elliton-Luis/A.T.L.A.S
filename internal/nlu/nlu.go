@@ -15,11 +15,13 @@ import (
 )
 
 type Client struct {
-	groqKey     string
-	groqModel   string
-	nvidiaKey   string
-	nvidiaModel string
-	httpClient  *http.Client
+	groqKey        string
+	groqModel      string
+	nvidiaKey      string
+	nvidiaModel    string
+	maxTokensQuick int
+	maxTokensHeavy int
+	httpClient     *http.Client
 }
 
 type IntentResult struct {
@@ -82,15 +84,23 @@ type ChatCompletionResponse struct {
 	} `json:"choices"`
 }
 
-func NewClient(groqKey, nvidiaKey, nvidiaModel string) *Client {
+func NewClient(groqKey, nvidiaKey, nvidiaModel string, maxTokensQuick, maxTokensHeavy int) *Client {
 	if nvidiaModel == "" {
 		nvidiaModel = "meta/llama-3.2-90b-vision-instruct"
 	}
+	if maxTokensQuick <= 0 {
+		maxTokensQuick = 250
+	}
+	if maxTokensHeavy <= 0 {
+		maxTokensHeavy = 800
+	}
 	return &Client{
-		groqKey:     groqKey,
-		groqModel:   "qwen/qwen3.8-27b",
-		nvidiaKey:   nvidiaKey,
-		nvidiaModel: nvidiaModel,
+		groqKey:        groqKey,
+		groqModel:      "qwen/qwen3.8-27b",
+		nvidiaKey:      nvidiaKey,
+		nvidiaModel:    nvidiaModel,
+		maxTokensQuick: maxTokensQuick,
+		maxTokensHeavy: maxTokensHeavy,
 		httpClient: &http.Client{
 			Timeout: 20 * time.Second,
 		},
@@ -208,7 +218,7 @@ Indique sempre "complexidade": "pesada" se a solicitação for uma pesquisa apro
 		Model:       c.groqModel,
 		Messages:    messages,
 		Temperature: 0.3,
-		MaxTokens:   450,
+		MaxTokens:   c.maxTokensQuick,
 	}
 
 	rawResp, err := c.doRequest(ctx, reqPayload)
@@ -300,7 +310,7 @@ Responda com extrema sofisticação, profundidade analítica, clareza cirúrgica
 		Model:       c.nvidiaModel,
 		Messages:    messages,
 		Temperature: 0.3,
-		MaxTokens:   800,
+		MaxTokens:   c.maxTokensHeavy,
 	}
 
 	return c.executeAPI(ctx, "https://integrate.api.nvidia.com/v1/chat/completions", c.nvidiaKey, payload)

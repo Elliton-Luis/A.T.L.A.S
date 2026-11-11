@@ -49,7 +49,7 @@ func main() {
 
 	tg := telegram.NewClient(cfg.TelegramBotToken)
 	sttClient := stt.NewClient(cfg.GroqAPIKey)
-	nluClient := nlu.NewClient(cfg.GroqAPIKey, cfg.NvidiaAPIKey, cfg.NvidiaModel)
+	nluClient := nlu.NewClient(cfg.GroqAPIKey, cfg.NvidiaAPIKey, cfg.NvidiaModel, cfg.MaxTokensQuick, cfg.MaxTokensHeavy)
 
 	app := &App{
 		cfg:       cfg,
@@ -228,7 +228,7 @@ func (a *App) processIncomingMessage(ctx context.Context, msg *telegram.Message)
 	// Registra no histórico para janela deslizante
 	_ = a.db.RecordHistory(ctx, "user", inputText)
 
-	history, _ := a.db.GetRecentHistory(ctx, 6)
+	history, _ := a.db.GetRecentHistory(ctx, a.cfg.HistoryLimit)
 
 	intent, err := a.nluClient.ParseIntent(ctx, inputText, currentDatetime, history)
 	if err != nil {
@@ -639,6 +639,10 @@ Basta me mandar uma mensagem direta, por exemplo:
 			sb.WriteString(fmt.Sprintf("• *%s*\n  📝 %s\n  ⚔️ _%s_\n\n", i.Titulo, i.Conteudo, i.QuestionamentoSocratico))
 		}
 		_ = a.tg.SendMessage(ctx, chatID, sb.String())
+
+	case "/tokens":
+		msg := fmt.Sprintf("🛡️ *Controle Simplificado de Tokens:*\n\n• Respostas Rápidas (Groq): máx. *%d* tokens\n• Análises Pesadas (NVIDIA): máx. *%d* tokens\n• Memória de Contexto: últimas *%d* mensagens\n\n_Para alterar, basta editar as variáveis MAX_TOKENS_QUICK ou MAX_TOKENS_HEAVY no seu .env._", a.cfg.MaxTokensQuick, a.cfg.MaxTokensHeavy, a.cfg.HistoryLimit)
+		_ = a.tg.SendMessage(ctx, chatID, msg)
 
 	case "/backup":
 		caption := fmt.Sprintf("🛡️ Backup manual solicitado em %s", time.Now().In(a.cfg.Location).Format("2006-01-02 15:04:05"))
