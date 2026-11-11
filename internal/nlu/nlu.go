@@ -24,6 +24,7 @@ type Client struct {
 
 type IntentResult struct {
 	Tipo                      string `json:"tipo"`
+	Complexidade              string `json:"complexidade,omitempty"` // "simples" ou "pesada"
 	Titulo                    string `json:"titulo,omitempty"`
 	Conteudo                  string `json:"conteudo,omitempty"`
 	PerguntaSocratica         string `json:"pergunta_socratica,omitempty"`
@@ -37,6 +38,24 @@ type IntentResult struct {
 	Horario                   string `json:"horario,omitempty"`
 	Nome                      string `json:"nome,omitempty"`
 	Mensagem                  string `json:"mensagem,omitempty"`
+}
+
+var Curiosidades = []string{
+	"Você sabia que os flamingos nascem cinzas e só ficam cor-de-rosa porque se alimentam de algas e camarões ricos em carotenoides?",
+	"Você sabia que o mel puro é o único alimento da Terra que nunca estraga? Potes de 3.000 anos achados no Egito continuam perfeitamente comestíveis.",
+	"Você sabia que os polvos possuem três corações, sangue azul e que dois terços dos seus neurônios ficam espalhados nos próprios tentáculos?",
+	"Você sabia que as lontras-marinhas dormem de mãos dadas na água para que a correnteza não as separe durante o sono?",
+	"Você sabia que a cada dois minutos tiramos mais fotos no mundo do que toda a humanidade tirou ao longo de todo o século XIX?",
+	"Você sabia que o tubarão-da-groenlândia pode viver mais de 400 anos, o que significa que alguns vivos hoje nasceram antes da Revolução Industrial?",
+	"Você sabia que as árvores compartilham nutrientes e se avisam sobre pragas no subsolo usando uma rede de fungos conhecida como 'Wood Wide Web'?",
+}
+
+func RandomCuriosity() string {
+	idx := time.Now().UnixNano() % int64(len(Curiosidades))
+	if idx < 0 {
+		idx = -idx
+	}
+	return Curiosidades[idx]
 }
 
 type ChatMessagePayload struct {
@@ -111,11 +130,13 @@ PERSONALIDADE (ESTILO JARVIS):
 - Em ideias, planos ou reflexões (MÉTODO SOCRÁTICO): atue como um conselheiro estratégico experiente. Valide a ideia e levante com polidez um ponto cego real, risco operacional ou custo de oportunidade com uma pergunta inteligente para aperfeiçoar o plano.
 - Extração de Texto: ao receber mensagens encaminhadas ou artigos, sintetize com clareza o cerne da mensagem de forma limpa.
 
-Classifique a intenção estritamente em uma das opções abaixo e responda EXCLUSIVAMENTE em formato JSON puro, sem blocos de código ou texto fora:
+Classifique a intenção estritamente em uma das opções abaixo e responda EXCLUSIVAMENTE em formato JSON puro.
+Indique sempre "complexidade": "pesada" se a solicitação for uma pesquisa aprofundada, análise estratégica complexa ou redação longa de projeto. Para todo o resto, use "complexidade": "simples":
 
 1. Para ideias, pensamentos, projetos ou planos:
 {
   "tipo": "ideia",
+  "complexidade": "simples" ou "pesada",
   "titulo": "Título conciso da ideia",
   "conteudo": "A essência da ideia",
   "pergunta_socratica": "Pergunta estratégica e reflexiva que aponta um ponto cego, risco ou aspecto a ser considerado para aperfeiçoar o plano"
@@ -124,6 +145,7 @@ Classifique a intenção estritamente em uma das opções abaixo e responda EXCL
 2. Para compromissos / eventos na agenda:
 {
   "tipo": "evento",
+  "complexidade": "simples",
   "descricao": "Nome do compromisso",
   "horario_oficial": "YYYY-MM-DD HH:MM:SS",
   "estimativa_deslocamento_min": 25,
@@ -133,6 +155,7 @@ Classifique a intenção estritamente em uma das opções abaixo e responda EXCL
 3. Para metas e objetivos:
 {
   "tipo": "objetivo",
+  "complexidade": "simples",
   "titulo": "Meta declarada",
   "prazo": "YYYY-MM-DD HH:MM:SS" ou ""
 }
@@ -140,6 +163,7 @@ Classifique a intenção estritamente em uma das opções abaixo e responda EXCL
 4. Para lembretes diários recorrentes ou programação de rotinas (ex: "todo dia às 09:00 mande uma mensagem dizendo...", "me lembre todo dia às 20:00 de..."):
 {
   "tipo": "lembrete_diario",
+  "complexidade": "simples",
   "horario": "HH:MM",
   "mensagem": "Mensagem exata a ser disparada todo dia"
 }
@@ -147,6 +171,7 @@ Classifique a intenção estritamente em uma das opções abaixo e responda EXCL
 5. Para conversa, reflexão ou debate geral (ou perguntas sobre o que você faz):
 {
   "tipo": "conversa",
+  "complexidade": "simples" ou "pesada",
   "resposta": "Sua resposta equilibrada, polida, inteligente e perspicaz"
 }
 `, currentDatetime)
@@ -242,6 +267,30 @@ Gere um balanço do dia:
 	}
 
 	return c.doRequest(ctx, reqPayload)
+}
+
+// DeepAnalyze delegates heavy research, complex analysis or strategic evaluations to NVIDIA NIM (90B).
+func (c *Client) DeepAnalyze(ctx context.Context, text string, history []database.ChatMessage) (string, error) {
+	systemPrompt := `Você é o ATLAS: assistente executivo e estrategista de alto nível estilo JARVIS.
+Você foi acionado para uma análise aprofundada, pesquisa ou raciocínio complexo.
+Responda com extrema sofisticação, profundidade analítica, clareza cirúrgica e elegância, apontando dados, riscos, custos de oportunidade e passos recomendados.`
+
+	messages := []ChatMessagePayload{
+		{Role: "system", Content: systemPrompt},
+	}
+	for _, h := range history {
+		messages = append(messages, ChatMessagePayload{Role: h.Role, Content: h.Content})
+	}
+	messages = append(messages, ChatMessagePayload{Role: "user", Content: text})
+
+	payload := ChatCompletionRequest{
+		Model:       c.nvidiaModel,
+		Messages:    messages,
+		Temperature: 0.3,
+		MaxTokens:   800,
+	}
+
+	return c.executeAPI(ctx, "https://integrate.api.nvidia.com/v1/chat/completions", c.nvidiaKey, payload)
 }
 
 func (c *Client) doRequest(ctx context.Context, payload ChatCompletionRequest) (string, error) {

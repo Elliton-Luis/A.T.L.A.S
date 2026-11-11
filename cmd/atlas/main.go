@@ -239,6 +239,31 @@ func (a *App) processIncomingMessage(ctx context.Context, msg *telegram.Message)
 		return
 	}
 
+	// Se a tarefa for pesada ou de pesquisa aprofundada:
+	// Manda o usuário esperar com uma curiosidade aleatória e chama a NVIDIA em segundo plano!
+	if intent.Complexidade == "pesada" {
+		curiosity := nlu.RandomCuriosity()
+		waitingMsg := fmt.Sprintf("⏳ *Esta solicitação exige análise aprofundada.* Acionando o núcleo de processamento pesado da NVIDIA...\n\nEnquanto isso, uma curiosidade aleatória para você:\n🦩 _%s_", curiosity)
+		_ = a.tg.SendMessage(ctx, chatID, waitingMsg)
+
+		go func(promptText string, chatHistory []database.ChatMessage) {
+			heavyCtx, cancel := context.WithTimeout(context.Background(), 75*time.Second)
+			defer cancel()
+
+			deepResponse, err := a.nluClient.DeepAnalyze(heavyCtx, promptText, chatHistory)
+			if err != nil {
+				log.Printf("[Erro NVIDIA Heavy] %v\n", err)
+				_ = a.tg.SendMessage(heavyCtx, chatID, "⚠️ Houve uma instabilidade momentânea na análise da NVIDIA.")
+				return
+			}
+
+			_ = a.tg.SendMessage(heavyCtx, chatID, deepResponse)
+			_ = a.db.RecordHistory(heavyCtx, "assistant", deepResponse)
+		}(inputText, history)
+
+		return
+	}
+
 	var reply string
 
 	switch intent.Tipo {
