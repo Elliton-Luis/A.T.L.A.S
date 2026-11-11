@@ -228,7 +228,7 @@ func (c *Client) DownloadVoiceFile(ctx context.Context, fileID string) (string, 
 	defer respDL.Body.Close()
 
 	// Write to secure temporary file (0600)
-	tmpFile, err := os.CreateTemp("", "atlas_voice_*.oga")
+	tmpFile, err := os.CreateTemp("", "atlas_voice_*.ogg")
 	if err != nil {
 		return "", fmt.Errorf("create temp file: %w", err)
 	}

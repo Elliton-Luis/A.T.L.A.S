@@ -9,7 +9,6 @@ import (
 	"mime/multipart"
 	"net/http"
 	"os"
-	"path/filepath"
 	"strings"
 	"time"
 )
@@ -47,7 +46,8 @@ func (c *Client) Transcribe(ctx context.Context, audioFilePath string) (string, 
 	body := &bytes.Buffer{}
 	writer := multipart.NewWriter(body)
 
-	part, err := writer.CreateFormFile("file", filepath.Base(audioFilePath))
+	// Groq requer explicitamente a extensão .ogg (e não .oga)
+	part, err := writer.CreateFormFile("file", "voice.ogg")
 	if err != nil {
 		return "", fmt.Errorf("create form file: %w", err)
 	}
@@ -70,6 +70,7 @@ func (c *Client) Transcribe(ctx context.Context, audioFilePath string) (string, 
 	}
 	req.Header.Set("Authorization", "Bearer "+c.apiKey)
 	req.Header.Set("Content-Type", writer.FormDataContentType())
+	req.Header.Set("User-Agent", "AtlasBot/1.0")
 
 	resp, err := c.httpClient.Do(req)
 	if err != nil {
