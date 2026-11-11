@@ -95,7 +95,7 @@ func (e *Engine) processEventBuffers(ctx context.Context, now time.Time, nowStr 
 	compEvents, err := e.db.GetPendingCompletionEvents(ctx, thresholdStr)
 	if err == nil {
 		for _, ev := range compEvents {
-			msg := fmt.Sprintf("⏱️ *Auditoria de Compromisso*\n\nO evento *%s* agendado para *%s* já terminou.\n\nVocê o cumpriu com sucesso ou houve adiamento?", ev.Descricao, ev.HorarioOficial)
+			msg := fmt.Sprintf("⏱️ *Compromisso Finalizado*\n\nO evento *%s* (agendado para %s) encerrou. Deseja marcar como concluído ou precisa de algum ajuste?", ev.Descricao, ev.HorarioOficial)
 			if err := e.tg.SendMessage(ctx, e.cfg.TelegramChatID, msg); err == nil {
 				_ = e.db.MarkCompletionNotified(ctx, ev.ID)
 			}
@@ -133,7 +133,7 @@ func (e *Engine) executeRoutine(ctx context.Context, r database.RotinaProativa, 
 		}
 
 	case "checkin":
-		message = fmt.Sprintf("⚡ *ATLAS — Check-in de Execução*\n\nMetas ativas: %d\nCompromissos hoje: %d\n\nVocê está avançando naquilo que realmente importa ou está se perdendo em trivialidades?", len(goals), len(events))
+		message = fmt.Sprintf("⚡ *ATLAS — Ponto de Situação*\n\nAgenda de hoje: %d compromisso(s) e %d meta(s) ativas. Como está o andamento das prioridades?", len(events), len(goals))
 
 	case "review":
 		aiReview, err := e.nluClient.GenerateReview(ctx, todayStr, events, goals)

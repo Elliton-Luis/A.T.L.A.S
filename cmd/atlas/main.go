@@ -248,7 +248,7 @@ func (a *App) processIncomingMessage(ctx context.Context, msg *telegram.Message)
 			log.Printf("[Erro DB Ideia] %v\n", err)
 			reply = "⚠️ Falha ao registrar ideia no banco."
 		} else {
-			reply = fmt.Sprintf("💡 *Ideia Anotada:* %s\n\n⚔️ *Desafio Socrático:*\n%s", intent.Titulo, intent.PerguntaSocratica)
+			reply = fmt.Sprintf("💡 *Ideia Registrada:* %s\n\n🔍 *Ponto de Atenção:*\n%s", intent.Titulo, intent.PerguntaSocratica)
 		}
 
 	case "evento":
@@ -317,7 +317,7 @@ func (a *App) processIncomingMessage(ctx context.Context, msg *telegram.Message)
 	default: // "conversa"
 		reply = intent.Resposta
 		if reply == "" {
-			reply = "O que exatamente você pretende alcançar com essa premissa?"
+			reply = "Entendido. Como posso prosseguir com isso?"
 		}
 	}
 
