@@ -297,6 +297,23 @@ func (a *App) processIncomingMessage(ctx context.Context, msg *telegram.Message)
 			reply = fmt.Sprintf("🎯 *Meta Registrada:* %s%s\n\nQual é o primeiro passo concreto hoje?", intent.Titulo, prazoInfo)
 		}
 
+	case "lembrete_diario":
+		if intent.Horario == "" || intent.Mensagem == "" {
+			reply = "⚠️ Por favor, especifique o horário (ex: 09:00) e a mensagem que deseja programar."
+		} else {
+			nome := intent.Mensagem
+			if len(nome) > 30 {
+				nome = nome[:27] + "..."
+			}
+			_, err := a.db.InsertRoutine(ctx, nome, intent.Horario, "custom", &intent.Mensagem)
+			if err != nil {
+				log.Printf("[Erro DB Routine] %v\n", err)
+				reply = "⚠️ Falha ao salvar a programação."
+			} else {
+				reply = fmt.Sprintf("✅ *Programado!*\n\nTodo dia às *%s* vou te mandar:\n👉 \"%s\"", intent.Horario, intent.Mensagem)
+			}
+		}
+
 	default: // "conversa"
 		reply = intent.Resposta
 		if reply == "" {
@@ -314,51 +331,66 @@ func (a *App) handleCommand(ctx context.Context, chatID int64, cmdText string) {
 
 	switch cmd {
 	case "/start", "/ajuda", "/help":
-		msg := `🤖 *ATLAS — Painel de Controle*
+		msg := `🤖 *ATLAS — Como Usar (Simples e Direto)*
 
-Eu sou o seu assistente executivo e socrático. Comandos disponíveis:
+• ⚡ */hud* — Abrir painel visual de controle
+• ⏰ */lembretes* — Ver mensagens diárias programadas
+• 🗑️ */apagar <id>* — Apagar uma programação diária (ex: /apagar 3)
+• 📅 */hoje* — Agenda de hoje com tempos de preparo e saída
+• 🎯 */metas* — Suas metas em andamento
+• 🗓️ */calendario* — Link para sincronizar no Google/Apple Calendar
 
-• ⚡ */hud* — Abrir painel visual de controle (Telegram WebApp)
-• 📅 */calendario* — Sincronizar agenda com Google / Apple Calendar (.ics)
-• 📋 */rotinas* — Ver e gerenciar rotinas proativas de mensagens
-• ⏰ */rotina <id> horario <HH:MM>* — Alterar horário de uma rotina
-• 🔄 */rotina <id> toggle* — Ativar/Desativar uma rotina
-• 📅 */hoje* — Ver agenda de hoje com buffers de atraso (+15%)
-• 🎯 */metas* — Ver objetivos e metas ativas
-• 💡 */ideias* — Ver ideias registradas e questionamentos
-• 🛡️ */backup* — Disparar backup imediato do banco
-
-Você também pode falar comigo por *texto ou áudio* ou *encaminhar mensagens* de outras conversas. Eu extraio compromissos, calculo tempos de saída e questiono suas premissas.`
+💬 *Comandos Naturais (Texto ou Áudio):*
+Basta me mandar uma mensagem direta, por exemplo:
+👉 _"Todo dia às 09:00 mande uma mensagem dizendo: tomar creatina e revisar tarefas"_
+👉 _"Tenho dentista amanhã às 15:00 com 30 min de viagem"_
+👉 _"Minha meta é faturar 10k até dezembro"_`
 		_ = a.tg.SendMessage(ctx, chatID, msg)
 
 	case "/hud", "/painel":
 		hudURL := fmt.Sprintf("%s/hud?token=%s", a.cfg.PublicURL, a.cfg.CalendarToken)
-		msg := "⚡ *ATLAS — Terminal Executivo (HUD)*\n\nToque no botão abaixo para abrir o seu painel visual de controle interativo:"
+		msg := "⚡ *ATLAS — Painel Visual (HUD)*\n\nToque no botão abaixo:"
 		_ = a.tg.SendMessageWithWebApp(ctx, chatID, msg, "⚡ Abrir Painel HUD", hudURL)
 
 	case "/calendario", "/agenda":
 		calURL := fmt.Sprintf("%s/calendar.ics?token=%s", a.cfg.PublicURL, a.cfg.CalendarToken)
-		msg := fmt.Sprintf("📅 *Sincronização de Calendário ATLAS*\n\nTodos os seus compromissos com buffers determinísticos de saída (+15%%) podem ser sincronizados nativamente no seu celular (Google Calendar, Apple Calendar ou Android).\n\n🔗 *Seu link pessoal seguro de assinatura:*\n`%s`\n\n_Dica: No Google Calendar, vá em 'Configurações' > 'Adicionar agenda' > 'Do URL' e cole o link acima._", calURL)
+		msg := fmt.Sprintf("📅 *Sincronização de Calendário*\n\nAdicione este link no seu Google/Apple Calendar:\n`%s`", calURL)
 		_ = a.tg.SendMessage(ctx, chatID, msg)
 
-	case "/rotinas":
+	case "/rotinas", "/lembretes":
 		routines, err := a.db.GetAllRoutines(ctx)
 		if err != nil || len(routines) == 0 {
-			_ = a.tg.SendMessage(ctx, chatID, "Nenhuma rotina cadastrada.")
+			_ = a.tg.SendMessage(ctx, chatID, "Nenhum lembrete programado.")
 			return
 		}
 
 		var sb strings.Builder
-		sb.WriteString("📋 *Rotinas Proativas Configuradas:*\n\n")
+		sb.WriteString("⏰ *Suas Mensagens e Rotinas Diárias:*\n\n")
 		for _, r := range routines {
-			status := "🟢 Ativa"
+			status := "🟢"
 			if r.Ativo == 0 {
-				status = "🔴 Inativa"
+				status = "🔴"
 			}
-			sb.WriteString(fmt.Sprintf("• *[%d]* `%s` — ⏰ *%s* (%s)\n", r.ID, r.Nome, r.Horario, status))
+			desc := r.Nome
+			if r.PromptCustom != nil && *r.PromptCustom != "" {
+				desc = fmt.Sprintf("\"%s\"", *r.PromptCustom)
+			}
+			sb.WriteString(fmt.Sprintf("%s *[%d]* às *%s* — %s\n", status, r.ID, r.Horario, desc))
 		}
-		sb.WriteString("\n_Use `/rotina <id> horario HH:MM` para mudar o horário ou `/rotina <id> toggle` para ativar/desativar._")
+		sb.WriteString("\n_Para apagar qualquer item: `/apagar <id>` (ex: `/apagar 4`)_")
 		_ = a.tg.SendMessage(ctx, chatID, sb.String())
+
+	case "/apagar", "/remover", "/del":
+		if len(parts) >= 2 {
+			id, err := strconv.ParseInt(parts[1], 10, 64)
+			if err == nil {
+				if err := a.db.DeleteRoutine(ctx, id); err == nil {
+					_ = a.tg.SendMessage(ctx, chatID, fmt.Sprintf("🗑️ Programação [%d] apagada.", id))
+					return
+				}
+			}
+		}
+		_ = a.tg.SendMessage(ctx, chatID, "Uso: `/apagar <id>` (ex: `/apagar 3`)")
 
 	case "/rotina":
 		if len(parts) >= 3 && strings.ToLower(parts[2]) == "toggle" {

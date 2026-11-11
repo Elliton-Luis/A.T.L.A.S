@@ -301,6 +301,24 @@ func (db *DB) GetAllRoutines(ctx context.Context) ([]RotinaProativa, error) {
 	return list, nil
 }
 
+// InsertRoutine adds a new daily routine / custom reminder.
+func (db *DB) InsertRoutine(ctx context.Context, nome, horario, tipo string, promptCustom *string) (int64, error) {
+	res, err := db.ExecContext(ctx, `
+		INSERT INTO rotinas_proativas (nome, horario, tipo, prompt_custom, ativo)
+		VALUES (?, ?, ?, ?, 1)
+	`, nome, horario, tipo, promptCustom)
+	if err != nil {
+		return 0, err
+	}
+	return res.LastInsertId()
+}
+
+// DeleteRoutine deletes a routine by ID.
+func (db *DB) DeleteRoutine(ctx context.Context, id int64) error {
+	_, err := db.ExecContext(ctx, "DELETE FROM rotinas_proativas WHERE id = ?", id)
+	return err
+}
+
 // UpdateRoutineTime changes the scheduled hour of a routine.
 func (db *DB) UpdateRoutineTime(ctx context.Context, id int64, newTime string) error {
 	_, err := db.ExecContext(ctx, "UPDATE rotinas_proativas SET horario = ? WHERE id = ?", newTime, id)

@@ -544,7 +544,7 @@
         routinesContainer.innerHTML = data.routines.map(r => `
           <div class="routine-row">
             <div class="routine-info">
-              <span class="routine-name">${formatRoutineName(r.Nome)}</span>
+              <span class="routine-name">${formatRoutineName(r.Nome, r.PromptCustom)}</span>
               <span class="routine-time">⏰ Disparo às ${r.Horario}</span>
             </div>
             <label class="toggle-switch">
@@ -593,11 +593,12 @@
       return str;
     }
 
-    function formatRoutineName(name) {
+    function formatRoutineName(name, prompt) {
       if (name === 'briefing_matinal') return '☀️ Briefing Matinal';
       if (name === 'checkin_tarde') return '⚡ Check-in da Tarde';
       if (name === 'review_noturno') return '🌙 Review Noturno';
-      return name;
+      if (prompt) return '🔔 "' + escapeHtml(prompt) + '"';
+      return '🔔 ' + escapeHtml(name);
     }
 
     function escapeHtml(s) {

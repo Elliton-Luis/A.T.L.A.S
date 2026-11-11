@@ -21,19 +21,20 @@ type Client struct {
 }
 
 type IntentResult struct {
-	Tipo                     string `json:"tipo"`
-	Titulo                   string `json:"titulo,omitempty"`
-	Conteudo                 string `json:"conteudo,omitempty"`
-	PerguntaSocratica        string `json:"pergunta_socratica,omitempty"`
-	Descricao                string `json:"descricao,omitempty"`
-	HorarioOficial           string `json:"horario_oficial,omitempty"`
+	Tipo                      string `json:"tipo"`
+	Titulo                    string `json:"titulo,omitempty"`
+	Conteudo                  string `json:"conteudo,omitempty"`
+	PerguntaSocratica         string `json:"pergunta_socratica,omitempty"`
+	Descricao                 string `json:"descricao,omitempty"`
+	HorarioOficial            string `json:"horario_oficial,omitempty"`
 	EstimativaDeslocamentoMin int    `json:"estimativa_deslocamento_min,omitempty"`
-	EstimativaPreparoMin     int    `json:"estimativa_preparo_min,omitempty"`
-	Prazo                    string `json:"prazo,omitempty"`
-	Resposta                 string `json:"resposta,omitempty"`
-	Acao                     string `json:"acao,omitempty"`
-	Horario                  string `json:"horario,omitempty"`
-	Nome                     string `json:"nome,omitempty"`
+	EstimativaPreparoMin      int    `json:"estimativa_preparo_min,omitempty"`
+	Prazo                     string `json:"prazo,omitempty"`
+	Resposta                  string `json:"resposta,omitempty"`
+	Acao                      string `json:"acao,omitempty"`
+	Horario                   string `json:"horario,omitempty"`
+	Nome                      string `json:"nome,omitempty"`
+	Mensagem                  string `json:"mensagem,omitempty"`
 }
 
 type ChatMessagePayload struct {
@@ -113,7 +114,14 @@ Classifique a intenção estritamente em uma das opções abaixo e responda EXCL
   "prazo": "YYYY-MM-DD HH:MM:SS" ou ""
 }
 
-4. Para conversa, reflexão ou debate geral:
+4. Para lembretes diários recorrentes ou programação de rotinas (ex: "todo dia às 09:00 mande uma mensagem dizendo...", "me lembre todo dia às 20:00 de..."):
+{
+  "tipo": "lembrete_diario",
+  "horario": "HH:MM",
+  "mensagem": "Mensagem exata a ser disparada todo dia"
+}
+
+5. Para conversa, reflexão ou debate geral:
 {
   "tipo": "conversa",
   "resposta": "Sua resposta socrática, incisiva, densa e concisa"
