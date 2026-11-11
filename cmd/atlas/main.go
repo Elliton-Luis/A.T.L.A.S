@@ -349,8 +349,12 @@ Basta me mandar uma mensagem direta, por exemplo:
 
 	case "/hud", "/painel":
 		hudURL := fmt.Sprintf("%s/hud?token=%s", a.cfg.PublicURL, a.cfg.CalendarToken)
-		msg := "⚡ *ATLAS — Painel Visual (HUD)*\n\nToque no botão abaixo:"
-		_ = a.tg.SendMessageWithWebApp(ctx, chatID, msg, "⚡ Abrir Painel HUD", hudURL)
+		msg := "⚡ *ATLAS — Painel Visual (HUD)*\n\nToque no botão abaixo ou acesse pelo link direto:\n" + hudURL
+		err := a.tg.SendMessageWithWebApp(ctx, chatID, msg, "⚡ Abrir Painel HUD", hudURL)
+		if err != nil {
+			log.Printf("[HUD] Botão WebApp falhou (exige HTTPS público): %v. Enviando link direto.\n", err)
+			_ = a.tg.SendMessage(ctx, chatID, "⚡ *ATLAS — Painel Visual (HUD)*\n\nAcesse seu painel pelo link:\n"+hudURL)
+		}
 
 	case "/calendario", "/agenda":
 		calURL := fmt.Sprintf("%s/calendar.ics?token=%s", a.cfg.PublicURL, a.cfg.CalendarToken)
