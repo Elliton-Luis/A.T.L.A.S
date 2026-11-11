@@ -23,6 +23,7 @@ import (
 	"atlas/internal/scheduler"
 	"atlas/internal/stt"
 	"atlas/internal/telegram"
+	"atlas/internal/web"
 )
 
 type App struct {
@@ -368,6 +369,50 @@ func (a *App) executeAppAction(ctx context.Context, intent *nlu.IntentResult) st
 		}
 		return "⚠️ Não encontrei o lembrete especificado para apagar."
 
+	case "liturgia":
+		liturgiaText, err := web.FetchLiturgiaDiaria(ctx)
+		if err != nil {
+			log.Printf("[Erro Liturgia] %v\n", err)
+			return "⚠️ Não foi possível carregar a liturgia diária no momento."
+		}
+		return liturgiaText
+
+	case "noticias":
+		termo := intent.Termo
+		if termo == "" {
+			termo = "brasil"
+		}
+		news, err := web.SearchGoogleNews(ctx, termo, 4)
+		if err != nil || len(news) == 0 {
+			return fmt.Sprintf("⚠️ Nenhuma notícia recente encontrada para '%s'.", termo)
+		}
+		var sb strings.Builder
+		sb.WriteString(fmt.Sprintf("📰 *Principais Notícias sobre '%s':*\n\n", termo))
+		for _, n := range news {
+			sb.WriteString(fmt.Sprintf("• *%s*\n  🔗 [Abrir Notícia](%s)\n\n", n.Title, n.Link))
+		}
+		return sb.String()
+
+	case "resumir_link":
+		link := intent.URL
+		if link == "" {
+			link = intent.Termo
+		}
+		if link == "" {
+			return "⚠️ Envie ou especifique o link (URL) que deseja resumir."
+		}
+		pageText, err := web.FetchPageText(ctx, link, 2500)
+		if err != nil {
+			log.Printf("[Erro FetchPage] %v\n", err)
+			return fmt.Sprintf("⚠️ Não foi possível ler o link informado: %v", err)
+		}
+		summaryPrompt := fmt.Sprintf("Resuma este artigo/página em tópicos executivos diretos e concisos (máx 3 parágrafos):\n\n%s", pageText)
+		summaryResp, err := a.nluClient.DeepAnalyze(ctx, summaryPrompt, nil)
+		if err != nil || summaryResp == "" {
+			return fmt.Sprintf("📄 *Conteúdo da Página:*\n\n%s", pageText)
+		}
+		return fmt.Sprintf("📄 *Resumo Executivo do Link:*\n\n%s\n\n🔗 *Fonte:* %s", summaryResp, link)
+
 	case "alterar_rotina":
 		if intent.Horario == "" {
 			return "⚠️ Por favor, especifique o novo horário (ex: 08:30)."
@@ -488,6 +533,8 @@ func (a *App) handleCommand(ctx context.Context, chatID int64, cmdText string) {
 		msg := `🤖 *ATLAS — Como Usar (Simples e Direto)*
 
 • ⚡ */hud* — Abrir painel visual de controle
+• 📖 */liturgia* — Liturgia diária católica de hoje (leituras e evangelho)
+• 📰 */noticias <tema>* — Buscar notícias recentes na internet
 • ⏰ */lembretes* — Ver mensagens diárias programadas
 • 🗑️ */apagar <id>* — Apagar uma programação diária (ex: /apagar 3)
 • 📅 */hoje* — Agenda de hoje com tempos de preparo e saída
@@ -496,10 +543,36 @@ func (a *App) handleCommand(ctx context.Context, chatID int64, cmdText string) {
 
 💬 *Comandos Naturais (Texto ou Áudio):*
 Basta me mandar uma mensagem direta, por exemplo:
-👉 _"Todo dia às 09:00 mande uma mensagem dizendo: tomar creatina e revisar tarefas"_
-👉 _"Tenho dentista amanhã às 15:00 com 30 min de viagem"_
-👉 _"Minha meta é faturar 10k até dezembro"_`
+👉 _"Qual é a liturgia diária de hoje?"_
+👉 _"Quais as principais notícias sobre inteligência artificial?"_
+👉 _"Resuma este link: https://..."_
+👉 _"Todo dia às 09:00 mande uma mensagem dizendo: tomar creatina"_`
 		_ = a.tg.SendMessage(ctx, chatID, msg)
+
+	case "/liturgia":
+		text, err := web.FetchLiturgiaDiaria(ctx)
+		if err != nil {
+			_ = a.tg.SendMessage(ctx, chatID, "⚠️ Erro ao consultar a liturgia diária.")
+			return
+		}
+		_ = a.tg.SendMessage(ctx, chatID, text)
+
+	case "/noticias":
+		termo := "brasil"
+		if len(parts) >= 2 {
+			termo = strings.Join(parts[1:], " ")
+		}
+		news, err := web.SearchGoogleNews(ctx, termo, 4)
+		if err != nil || len(news) == 0 {
+			_ = a.tg.SendMessage(ctx, chatID, fmt.Sprintf("Nenhuma notícia recente encontrada para '%s'.", termo))
+			return
+		}
+		var sb strings.Builder
+		sb.WriteString(fmt.Sprintf("📰 *Principais Notícias sobre '%s':*\n\n", termo))
+		for _, n := range news {
+			sb.WriteString(fmt.Sprintf("• *%s*\n  🔗 [Abrir Notícia](%s)\n\n", n.Title, n.Link))
+		}
+		_ = a.tg.SendMessage(ctx, chatID, sb.String())
 
 	case "/hud", "/painel":
 		hudURL := fmt.Sprintf("%s/hud?token=%s", a.cfg.PublicURL, a.cfg.CalendarToken)

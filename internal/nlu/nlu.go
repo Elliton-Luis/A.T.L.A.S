@@ -43,6 +43,7 @@ type IntentResult struct {
 	Horario                   string `json:"horario,omitempty"`
 	Nome                      string `json:"nome,omitempty"`
 	Mensagem                  string `json:"mensagem,omitempty"`
+	URL                       string `json:"url,omitempty"`
 }
 
 var Curiosidades = []string{
@@ -181,12 +182,13 @@ Indique sempre "complexidade": "pesada" se a solicitação for uma pesquisa apro
   "mensagem": "Mensagem exata a ser disparada todo dia"
 }
 
-5. Para ações e comandos operacionais do aplicativo (apagar/alterar lembretes, concluir/excluir eventos, atualizar metas, backup, ver agenda):
+5. Para ações do aplicativo e buscas na internet (apagar/alterar lembretes, concluir eventos, liturgia diária, notícias, resumir links):
 {
   "tipo": "acao",
-  "acao": "apagar_rotina" ou "alterar_rotina" ou "toggle_rotina" ou "concluir_evento" ou "apagar_evento" ou "atualizar_meta" ou "fazer_backup" ou "listar_agenda" ou "listar_lembretes",
+  "acao": "liturgia" ou "noticias" ou "resumir_link" ou "apagar_rotina" ou "alterar_rotina" ou "toggle_rotina" ou "concluir_evento" ou "apagar_evento" ou "atualizar_meta" ou "fazer_backup" ou "listar_agenda" ou "listar_lembretes",
   "id": 0 (ou o número do ID se mencionado),
-  "termo": "palavra-chave da meta, lembrete ou evento (ex: 'creatina', 'dentista', 'faturamento')",
+  "termo": "palavra-chave (ex: tema da notícia 'inteligência artificial', ou da meta/lembrete/evento)",
+  "url": "https://..." (se o usuário forneceu um link para ler/resumir),
   "horario": "HH:MM" (se for alterar horário),
   "progresso": 80 (número de 0 a 100 se for atualizar meta)
 }
