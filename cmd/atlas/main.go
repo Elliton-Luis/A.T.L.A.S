@@ -49,7 +49,7 @@ func main() {
 
 	tg := telegram.NewClient(cfg.TelegramBotToken)
 	sttClient := stt.NewClient(cfg.GroqAPIKey)
-	nluClient := nlu.NewClient(cfg.NvidiaAPIKey, cfg.NvidiaModel)
+	nluClient := nlu.NewClient(cfg.GroqAPIKey, cfg.NvidiaAPIKey, cfg.NvidiaModel)
 
 	app := &App{
 		cfg:       cfg,

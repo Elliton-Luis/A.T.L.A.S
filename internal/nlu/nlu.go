@@ -15,9 +15,11 @@ import (
 )
 
 type Client struct {
-	apiKey     string
-	model      string
-	httpClient *http.Client
+	groqKey     string
+	groqModel   string
+	nvidiaKey   string
+	nvidiaModel string
+	httpClient  *http.Client
 }
 
 type IntentResult struct {
@@ -58,25 +60,27 @@ type ChatCompletionResponse struct {
 	} `json:"choices"`
 }
 
-func NewClient(apiKey, model string) *Client {
-	if model == "" {
-		model = "meta/llama-3.2-90b-vision-instruct"
+func NewClient(groqKey, nvidiaKey, nvidiaModel string) *Client {
+	if nvidiaModel == "" {
+		nvidiaModel = "meta/llama-3.2-90b-vision-instruct"
 	}
 	return &Client{
-		apiKey: apiKey,
-		model:  model,
+		groqKey:     groqKey,
+		groqModel:   "qwen/qwen3.8-27b",
+		nvidiaKey:   nvidiaKey,
+		nvidiaModel: nvidiaModel,
 		httpClient: &http.Client{
-			Timeout: 25 * time.Second,
+			Timeout: 20 * time.Second,
 		},
 	}
 }
 
 var jsonBlockRegex = regexp.MustCompile(`(?s)\{.*\}`)
 
-// ParseIntent sends the user's message along with sliding history to NVIDIA NIM.
+// ParseIntent sends the user's message along with sliding history to NLU (Groq LPU ultra-fast / NVIDIA fallback).
 func (c *Client) ParseIntent(ctx context.Context, text, currentDatetime string, history []database.ChatMessage) (*IntentResult, error) {
-	if c.apiKey == "" {
-		return nil, fmt.Errorf("NVIDIA_API_KEY is not configured")
+	if c.groqKey == "" && c.nvidiaKey == "" {
+		return nil, fmt.Errorf("nenhuma chave de IA (Groq ou NVIDIA) configurada")
 	}
 
 	systemPrompt := fmt.Sprintf(`Você é o ATLAS: assistente pessoal executivo, socrático, combativo, direto e hiper-racional.
@@ -144,7 +148,7 @@ Classifique a intenção estritamente em uma das opções abaixo e responda EXCL
 	})
 
 	reqPayload := ChatCompletionRequest{
-		Model:       c.model,
+		Model:       c.groqModel,
 		Messages:    messages,
 		Temperature: 0.3,
 		MaxTokens:   450,
@@ -188,7 +192,7 @@ Diretrizes:
 - Máximo 3 parágrafos curtos. Sem introduções vazias.`, todayStr, len(events), len(goals))
 
 	reqPayload := ChatCompletionRequest{
-		Model: c.model,
+		Model: c.groqModel,
 		Messages: []ChatMessagePayload{
 			{Role: "system", Content: "Você é o ATLAS: assistente executivo e socrático estilo JARVIS."},
 			{Role: "user", Content: prompt},
@@ -210,7 +214,7 @@ Gere uma mensagem incisiva de auditoria do dia:
 - Máximo 3 parágrafos curtos, tom combativo e racional.`, todayStr)
 
 	reqPayload := ChatCompletionRequest{
-		Model: c.model,
+		Model: c.groqModel,
 		Messages: []ChatMessagePayload{
 			{Role: "system", Content: "Você é o ATLAS: assistente executivo e socrático estilo JARVIS."},
 			{Role: "user", Content: prompt},
@@ -223,37 +227,58 @@ Gere uma mensagem incisiva de auditoria do dia:
 }
 
 func (c *Client) doRequest(ctx context.Context, payload ChatCompletionRequest) (string, error) {
+	// 1. Tenta Groq primeiro (velocidade relâmpago de ~0.3s)
+	if c.groqKey != "" {
+		groqPayload := payload
+		groqPayload.Model = c.groqModel
+		res, err := c.executeAPI(ctx, "https://api.groq.com/openai/v1/chat/completions", c.groqKey, groqPayload)
+		if err == nil && res != "" {
+			return res, nil
+		}
+	}
+
+	// 2. Fallback para NVIDIA NIM caso Groq oscile
+	if c.nvidiaKey != "" {
+		nvidiaPayload := payload
+		nvidiaPayload.Model = c.nvidiaModel
+		return c.executeAPI(ctx, "https://integrate.api.nvidia.com/v1/chat/completions", c.nvidiaKey, nvidiaPayload)
+	}
+
+	return "", fmt.Errorf("nenhum provedor de IA (Groq ou NVIDIA) configurado com sucesso")
+}
+
+func (c *Client) executeAPI(ctx context.Context, url, apiKey string, payload ChatCompletionRequest) (string, error) {
 	body, err := json.Marshal(payload)
 	if err != nil {
 		return "", fmt.Errorf("marshal request: %w", err)
 	}
 
-	url := "https://integrate.api.nvidia.com/v1/chat/completions"
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(body))
 	if err != nil {
 		return "", fmt.Errorf("create req: %w", err)
 	}
 	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("Authorization", "Bearer "+c.apiKey)
+	req.Header.Set("Authorization", "Bearer "+apiKey)
+	req.Header.Set("User-Agent", "AtlasBot/1.0")
 
 	resp, err := c.httpClient.Do(req)
 	if err != nil {
-		return "", fmt.Errorf("do nvidia req: %w", err)
+		return "", fmt.Errorf("do req to %s: %w", url, err)
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
 		respBody, _ := io.ReadAll(resp.Body)
-		return "", fmt.Errorf("nvidia nim status %d: %s", resp.StatusCode, string(respBody))
+		return "", fmt.Errorf("api status %d: %s", resp.StatusCode, string(respBody))
 	}
 
 	var res ChatCompletionResponse
 	if err := json.NewDecoder(resp.Body).Decode(&res); err != nil {
-		return "", fmt.Errorf("decode nvidia response: %w", err)
+		return "", fmt.Errorf("decode response: %w", err)
 	}
 
 	if len(res.Choices) == 0 {
-		return "", fmt.Errorf("nvidia returned 0 choices")
+		return "", fmt.Errorf("api returned 0 choices")
 	}
 
 	return strings.TrimSpace(res.Choices[0].Message.Content), nil
