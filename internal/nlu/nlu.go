@@ -25,7 +25,7 @@ type Client struct {
 }
 
 type IntentResult struct {
-	Tipo                      string `json:"tipo"` // acao, evento, ideia, objetivo, lembrete_diario, conversa
+	Tipo                      string `json:"tipo"`           // acao, evento, ideia, objetivo, lembrete_diario, conversa
 	Acao                      string `json:"acao,omitempty"` // apagar_rotina, alterar_rotina, toggle_rotina, concluir_evento, apagar_evento, atualizar_meta, fazer_backup, listar_agenda, listar_lembretes
 	ID                        int64  `json:"id,omitempty"`
 	Termo                     string `json:"termo,omitempty"`

@@ -40,15 +40,21 @@ func (e *Engine) Start(ctx context.Context) {
 			case <-ctx.Done():
 				return
 			case <-ticker.C:
-				e.tick(ctx)
+				e.Tick(ctx)
 			}
 		}
 	}()
 	log.Println("[Scheduler] Motor de Proatividade e Buffers iniciado.")
 }
 
-func (e *Engine) tick(ctx context.Context) {
-	now := time.Now().In(e.cfg.Location)
+// Tick executes a single scheduled evaluation pass (buffers, proactive routines, backups).
+// Can be called by internal goroutines or by an external serverless cron webhook (e.g. cron-job.org).
+func (e *Engine) Tick(ctx context.Context) {
+	loc := e.cfg.Location
+	if loc == nil {
+		loc = time.Local
+	}
+	now := time.Now().In(loc)
 	nowStr := database.FormatDateTime(now)
 	todayStr := now.Format("2006-01-02")
 	timeHM := now.Format("15:04")
@@ -160,6 +166,10 @@ func (e *Engine) executeRoutine(ctx context.Context, r database.RotinaProativa, 
 }
 
 func (e *Engine) processDailyBackup(ctx context.Context, todayStr, timeHM string) {
+	if e.cfg.TursoDatabaseURL != "" {
+		return // Cloud database with automated remote snapshots
+	}
+
 	backupHour := e.cfg.BackupHour
 	if backupHour == "" {
 		backupHour = "03:00"

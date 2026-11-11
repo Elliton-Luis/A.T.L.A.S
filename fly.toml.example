@@ -1,0 +1,21 @@
+app = "atlas-assistant"
+primary_region = "gru" # Sao Paulo
+
+[build]
+  dockerfile = "Dockerfile"
+
+[env]
+  PORT = "8080"
+  DB_PATH = "/app/data/atlas.sqlite"
+  TIMEZONE = "America/Sao_Paulo"
+
+[http_service]
+  internal_port = 8080
+  force_https = true
+  auto_stop_machines = "stop"
+  auto_start_machines = true
+  min_machines_running = 1 # Mantem 1 maquina ativa 24/7 para as Goroutines e Scheduler
+
+[[mounts]]
+  source = "atlas_data"
+  destination = "/app/data"

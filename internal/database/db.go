@@ -9,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	_ "github.com/tursodatabase/libsql-client-go/libsql"
 	_ "modernc.org/sqlite"
 )
 
@@ -65,8 +66,37 @@ type RotinaProativa struct {
 	CriadoEm       string
 }
 
-// Open initializes the SQLite database with WAL mode and strict file permissions.
-func Open(dbPath string) (*DB, error) {
+// Open initializes the database.
+// If tursoURL is non-empty, it connects to Turso (libSQL) in the cloud.
+// Otherwise, it opens the local SQLite file in WAL mode.
+func Open(dbPath, tursoURL, tursoToken string) (*DB, error) {
+	if strings.TrimSpace(tursoURL) != "" {
+		dsn := strings.TrimSpace(tursoURL)
+		if strings.TrimSpace(tursoToken) != "" && !strings.Contains(dsn, "authToken=") {
+			sep := "?"
+			if strings.Contains(dsn, "?") {
+				sep = "&"
+			}
+			dsn = fmt.Sprintf("%s%sauthToken=%s", dsn, sep, strings.TrimSpace(tursoToken))
+		}
+
+		db, err := sql.Open("libsql", dsn)
+		if err != nil {
+			return nil, fmt.Errorf("failed to open turso database: %w", err)
+		}
+		db.SetMaxOpenConns(10)
+		db.SetMaxIdleConns(5)
+		db.SetConnMaxLifetime(time.Hour)
+
+		wrapper := &DB{db}
+		if err := wrapper.migrate(context.Background(), true); err != nil {
+			db.Close()
+			return nil, fmt.Errorf("failed turso database migration: %w", err)
+		}
+		return wrapper, nil
+	}
+
+	// Local SQLite mode
 	dir := filepath.Dir(dbPath)
 	if err := os.MkdirAll(dir, 0700); err != nil {
 		return nil, fmt.Errorf("failed to create db directory: %w", err)
@@ -90,7 +120,7 @@ func Open(dbPath string) (*DB, error) {
 	}
 
 	wrapper := &DB{db}
-	if err := wrapper.migrate(context.Background()); err != nil {
+	if err := wrapper.migrate(context.Background(), false); err != nil {
 		db.Close()
 		return nil, fmt.Errorf("failed database migration: %w", err)
 	}
@@ -98,10 +128,12 @@ func Open(dbPath string) (*DB, error) {
 	return wrapper, nil
 }
 
-func (db *DB) migrate(ctx context.Context) error {
-	schema := `
-	PRAGMA journal_mode = WAL;
+func (db *DB) migrate(ctx context.Context, isRemote bool) error {
+	if !isRemote {
+		_, _ = db.ExecContext(ctx, "PRAGMA journal_mode = WAL;")
+	}
 
+	schema := `
 	CREATE TABLE IF NOT EXISTS eventos (
 		id INTEGER PRIMARY KEY AUTOINCREMENT,
 		descricao TEXT NOT NULL,

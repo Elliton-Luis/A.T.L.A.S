@@ -25,6 +25,9 @@ type Config struct {
 	MaxTokensQuick      int
 	MaxTokensHeavy      int
 	HistoryLimit        int
+	TursoDatabaseURL    string
+	TursoAuthToken      string
+	CronSecret          string
 }
 
 // Load reads .env (if present) and populates the Config from environment variables.
@@ -77,6 +80,9 @@ func Load(envPath string) (*Config, error) {
 		MaxTokensQuick:      maxQuick,
 		MaxTokensHeavy:      maxHeavy,
 		HistoryLimit:        histLimit,
+		TursoDatabaseURL:    getEnv("TURSO_DATABASE_URL", ""),
+		TursoAuthToken:      getEnv("TURSO_AUTH_TOKEN", ""),
+		CronSecret:          getEnv("CRON_SECRET", ""),
 	}
 
 	return cfg, nil

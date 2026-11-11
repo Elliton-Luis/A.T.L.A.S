@@ -15,7 +15,7 @@ func TestDatabaseMigrationAndOperations(t *testing.T) {
 	defer os.RemoveAll(tmpDir)
 
 	dbPath := filepath.Join(tmpDir, "test.sqlite")
-	db, err := Open(dbPath)
+	db, err := Open(dbPath, "", "")
 	if err != nil {
 		t.Fatalf("failed to open test db: %v", err)
 	}

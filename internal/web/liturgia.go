@@ -10,21 +10,21 @@ import (
 )
 
 type LiturgiaResponse struct {
-	Data            string      `json:"data"`
-	Liturgia        string      `json:"liturgia"`
-	Cor             string      `json:"cor"`
+	Data            string `json:"data"`
+	Liturgia        string `json:"liturgia"`
+	Cor             string `json:"cor"`
 	PrimeiraLeitura struct {
 		Referencia string `json:"referencia"`
 		Titulo     string `json:"titulo"`
 		Texto      string `json:"texto"`
 	} `json:"primeiraLeitura"`
-	SegundaLeitura  interface{} `json:"segundaLeitura"`
-	Salmo           struct {
+	SegundaLeitura interface{} `json:"segundaLeitura"`
+	Salmo          struct {
 		Referencia string `json:"referencia"`
 		Refrao     string `json:"refrao"`
 		Texto      string `json:"texto"`
 	} `json:"salmo"`
-	Evangelho       struct {
+	Evangelho struct {
 		Referencia string `json:"referencia"`
 		Titulo     string `json:"titulo"`
 		Texto      string `json:"texto"`
