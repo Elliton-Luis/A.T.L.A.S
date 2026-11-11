@@ -49,7 +49,7 @@ func Load(envPath string) (*Config, error) {
 		TelegramSecretToken: getEnv("TELEGRAM_SECRET_TOKEN", ""),
 		TelegramChatID:      chatID,
 		NvidiaAPIKey:        getEnv("NVIDIA_API_KEY", ""),
-		NvidiaModel:         getEnv("NVIDIA_MODEL", "meta/llama-3.1-70b-instruct"),
+		NvidiaModel:         getEnv("NVIDIA_MODEL", "meta/llama-3.2-90b-vision-instruct"),
 		GroqAPIKey:          getEnv("GROQ_API_KEY", ""),
 		DBPath:              getEnv("DB_PATH", "data/atlas.sqlite"),
 		Timezone:            tzName,

@@ -60,7 +60,7 @@ type ChatCompletionResponse struct {
 
 func NewClient(apiKey, model string) *Client {
 	if model == "" {
-		model = "meta/llama-3.1-70b-instruct"
+		model = "meta/llama-3.2-90b-vision-instruct"
 	}
 	return &Client{
 		apiKey: apiKey,
