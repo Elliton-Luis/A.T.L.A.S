@@ -1,0 +1,10 @@
+Dockerfile
+Dockerfile.*
+fly.toml.example
+atlas.service
+data/
+bin/
+*.sqlite*
+.env
+.env.*
+Makefile
