@@ -637,6 +637,17 @@ func (s *Server) handlePendingConfirmation(ctx context.Context, chatID int64, in
 			return true, fmt.Sprintf("🗑️ Todos os *%d* lembretes e rotinas programadas foram removidos com sucesso.", total)
 		}
 		return true, "⚠️ Confirmação não compreendida. Por segurança, seus lembretes foram mantidos intactos."
+
+	case "limpar_tudo":
+		if isNo {
+			return true, "👍 Operação cancelada. Seus compromissos e lembretes continuam intactos."
+		}
+		if isYes {
+			totalEv, _ := s.db.ClearAllEventos(ctx)
+			totalRt, _ := s.db.ClearAllRoutines(ctx)
+			return true, fmt.Sprintf("🗑️ *Sistema completamente limpo!*\nForam removidos *%d* compromisso(s) e *%d* lembrete(s).", totalEv, totalRt)
+		}
+		return true, "⚠️ Confirmação não compreendida. Seus dados foram mantidos intactos por segurança."
 	}
 
 	return false, ""
@@ -731,11 +742,7 @@ func (s *Server) createEventoFromIntent(ctx context.Context, intent *nlu.IntentR
 			}
 		}
 		if horarioHM == "" {
-			return "⚠️ Para compromissos semanais, especifique o dia e o horário (ex: 'toda segunda às 14:00')."
-		}
-		diaSem := 1 // Default Segunda-feira se não especificado
-		if intent.DiaSemana != nil && *intent.DiaSemana >= 0 && *intent.DiaSemana <= 6 {
-			diaSem = *intent.DiaSemana
+			return "⚠️ Para compromissos semanais, especifique o dia e o horário (ex: 'toda segunda às 14:00' ou 'toda semana exceto domingo às 08:00')."
 		}
 
 		parts := strings.Split(horarioHM, ":")
@@ -746,6 +753,31 @@ func (s *Server) createEventoFromIntent(ctx context.Context, intent *nlu.IntentR
 		}
 		refTime := time.Date(now.Year(), now.Month(), now.Day(), hh, mm, 0, 0, s.cfg.Location)
 		buffers := calculator.Calculate(refTime, deslocamento, preparo, calculator.DefaultDelayMargin)
+
+		// Múltiplos dias da semana ou exceções (ex: "exceto domingo e segunda", "segunda a sexta", "terça e quinta")
+		if len(intent.DiasSemana) > 0 {
+			var insertedDays []string
+			for _, d := range intent.DiasSemana {
+				if d < 0 || d > 6 {
+					continue
+				}
+				dayVal := d
+				_, err := s.db.InsertEventoCompleto(ctx, intent.Descricao, "", buffers.BufferPrep.Format("15:04"), buffers.BufferLeave.Format("15:04"), "semanal", &dayVal, nil, horarioHM, deslocamento, preparo)
+				if err == nil {
+					insertedDays = append(insertedDays, diasNomes[dayVal])
+				}
+			}
+			if len(insertedDays) == 0 {
+				return "⚠️ Não foi possível identificar os dias da semana solicitados."
+			}
+			return fmt.Sprintf("🎯 *Compromisso Recorrente Agendado (+15%% margem determinística)*\n\n📌 *Evento:* %s\n🔁 *Dias:* %s às *%s*\n🛁 *Preparo:* %s\n🚗 *Saída:* %s\n🛡️ *Margem:* +%d min de segurança diária",
+				intent.Descricao, strings.Join(insertedDays, ", "), horarioHM, buffers.BufferPrep.Format("15:04"), buffers.BufferLeave.Format("15:04"), buffers.MarginMinutes)
+		}
+
+		diaSem := 1 // Default Segunda-feira se não especificado
+		if intent.DiaSemana != nil && *intent.DiaSemana >= 0 && *intent.DiaSemana <= 6 {
+			diaSem = *intent.DiaSemana
+		}
 
 		_, err := s.db.InsertEventoCompleto(ctx, intent.Descricao, "", buffers.BufferPrep.Format("15:04"), buffers.BufferLeave.Format("15:04"), "semanal", &diaSem, nil, horarioHM, deslocamento, preparo)
 		if err != nil {
@@ -809,19 +841,6 @@ func (s *Server) createEventoFromIntent(ctx context.Context, intent *nlu.IntentR
 
 func (s *Server) executeAppAction(ctx context.Context, intent *nlu.IntentResult) string {
 	switch intent.Acao {
-	case "apagar_rotina":
-		if intent.ID > 0 {
-			if err := s.db.DeleteRoutine(ctx, intent.ID); err == nil {
-				return fmt.Sprintf("🗑️ Lembrete [%d] apagado com sucesso.", intent.ID)
-			}
-		}
-		if intent.Termo != "" {
-			if nome, err := s.db.DeleteRoutineByName(ctx, intent.Termo); err == nil {
-				return fmt.Sprintf("🗑️ Lembrete '%s' apagado com sucesso.", nome)
-			}
-		}
-		return "⚠️ Não encontrei o lembrete especificado para apagar."
-
 	case "liturgia":
 		liturgiaText, err := web.FetchLiturgiaDiaria(ctx)
 		if err != nil {
@@ -911,14 +930,75 @@ func (s *Server) executeAppAction(ctx context.Context, intent *nlu.IntentResult)
 			_ = s.db.DeleteEvento(ctx, intent.ID)
 			return fmt.Sprintf("🗑️ Compromisso [%d] excluído da sua agenda.", intent.ID)
 		}
-		if intent.Termo != "" {
-			id, desc, err := s.db.FindEventoByDesc(ctx, intent.Termo)
-			if err == nil {
-				_ = s.db.DeleteEvento(ctx, id)
-				return fmt.Sprintf("🗑️ Compromisso *%s* excluído da sua agenda.", desc)
+		cleanTerm := strings.ToLower(strings.TrimSpace(intent.Termo))
+		if cleanTerm == "isso" || cleanTerm == "esse" || cleanTerm == "este" || cleanTerm == "ultimo" || cleanTerm == "o ultimo" || cleanTerm == "" {
+			if latestEv, err := s.db.GetLatestPendingEvento(ctx); err == nil && latestEv != nil {
+				_ = s.db.DeleteEvento(ctx, latestEv.ID)
+				return fmt.Sprintf("🗑️ Último compromisso agendado (*%s*) foi excluído.", latestEv.Descricao)
+			}
+			if latestRt, err := s.db.GetLatestRoutine(ctx); err == nil && latestRt != nil {
+				_ = s.db.DeleteRoutine(ctx, latestRt.ID)
+				return fmt.Sprintf("🗑️ Último lembrete/rotina (*%s*) foi excluído.", latestRt.Nome)
+			}
+			return "⚠️ Não encontrei nenhum compromisso recente pendente para excluir."
+		}
+
+		// 1. Tenta apagar na agenda (todas as ocorrências)
+		affected, desc, err := s.db.DeleteEventosByDesc(ctx, cleanTerm)
+		if err == nil && affected > 0 {
+			if affected > 1 {
+				return fmt.Sprintf("🗑️ Compromisso *%s* excluído da sua agenda (%d ocorrências removidas).", desc, affected)
+			}
+			return fmt.Sprintf("🗑️ Compromisso *%s* excluído da sua agenda.", desc)
+		}
+
+		// 2. Se não achou na agenda, busca nas rotinas/lembretes (generalização)
+		if nome, err := s.db.DeleteRoutineByName(ctx, cleanTerm); err == nil && nome != "" {
+			return fmt.Sprintf("🗑️ Lembrete/rotina *%s* excluído com sucesso.", nome)
+		}
+
+		return fmt.Sprintf("⚠️ Não localizei nenhum compromisso ou lembrete correspondente a '%s'.", intent.Termo)
+
+	case "apagar_rotina":
+		if intent.ID > 0 {
+			if err := s.db.DeleteRoutine(ctx, intent.ID); err == nil {
+				return fmt.Sprintf("🗑️ Rotina [%d] apagada.", intent.ID)
 			}
 		}
-		return "⚠️ Não localizei o compromisso para excluir."
+		cleanTerm := strings.ToLower(strings.TrimSpace(intent.Termo))
+		if cleanTerm == "isso" || cleanTerm == "esse" || cleanTerm == "este" || cleanTerm == "ultimo" || cleanTerm == "" {
+			if latestRt, err := s.db.GetLatestRoutine(ctx); err == nil && latestRt != nil {
+				_ = s.db.DeleteRoutine(ctx, latestRt.ID)
+				return fmt.Sprintf("🗑️ Último lembrete/rotina (*%s*) foi excluído.", latestRt.Nome)
+			}
+			if latestEv, err := s.db.GetLatestPendingEvento(ctx); err == nil && latestEv != nil {
+				_ = s.db.DeleteEvento(ctx, latestEv.ID)
+				return fmt.Sprintf("🗑️ Último compromisso agendado (*%s*) foi excluído.", latestEv.Descricao)
+			}
+			return "⚠️ Não encontrei nenhuma rotina recente para apagar."
+		}
+
+		// 1. Tenta deletar rotina
+		if nome, err := s.db.DeleteRoutineByName(ctx, cleanTerm); err == nil && nome != "" {
+			return fmt.Sprintf("🗑️ Lembrete/rotina *%s* excluído com sucesso.", nome)
+		}
+
+		// 2. Se não achou em rotinas, busca nos eventos da agenda (generalização)
+		affected, desc, err := s.db.DeleteEventosByDesc(ctx, cleanTerm)
+		if err == nil && affected > 0 {
+			return fmt.Sprintf("🗑️ Compromisso *%s* excluído da agenda.", desc)
+		}
+
+		return fmt.Sprintf("⚠️ Não localizei nenhuma rotina ou compromisso correspondente a '%s'.", intent.Termo)
+
+	case "limpar_tudo", "delete_tudo":
+		countEv, _ := s.db.CountAllEventos(ctx)
+		countRt, _ := s.db.CountAllRoutines(ctx)
+		if countEv == 0 && countRt == 0 {
+			return "✨ O sistema já está completamente limpo. Não há compromissos nem lembretes registrados."
+		}
+		_ = s.db.SavePendingConfirmation(ctx, s.cfg.TelegramChatID, "limpar_tudo", 0, "")
+		return fmt.Sprintf("⚠️ *Atenção:* Você tem certeza de que deseja *apagar TUDO* (%d compromisso(s) e %d lembrete(s))?\n\nEsta ação é permanente e irreversível.\n\n👉 Responda com *Sim* para confirmar ou *Não* para cancelar.", countEv, countRt)
 
 	case "limpar_agenda":
 		count, _ := s.db.CountAllEventos(ctx)
@@ -1171,6 +1251,17 @@ func (s *Server) handleCommand(ctx context.Context, chatID int64, cmdText string
 		}
 		_ = s.db.SavePendingConfirmation(ctx, chatID, "limpar_lembretes", 0, "")
 		msg := fmt.Sprintf("⚠️ *Atenção:* Você tem certeza de que deseja *apagar todos os %d lembretes e rotinas diárias*?\n\nEsta ação é permanente e irreversível.\n\n👉 Responda com *Sim* para confirmar ou *Não* para cancelar.", count)
+		_ = s.tg.SendMessage(ctx, chatID, msg)
+
+	case "/limpar_tudo", "/delete_tudo":
+		countEv, _ := s.db.CountAllEventos(ctx)
+		countRt, _ := s.db.CountAllRoutines(ctx)
+		if countEv == 0 && countRt == 0 {
+			_ = s.tg.SendMessage(ctx, chatID, "✨ O sistema já está completamente limpo. Não há compromissos nem lembretes registrados.")
+			return
+		}
+		_ = s.db.SavePendingConfirmation(ctx, chatID, "limpar_tudo", 0, "")
+		msg := fmt.Sprintf("⚠️ *Atenção:* Você tem certeza de que deseja *apagar TUDO* (%d compromisso(s) e %d lembrete(s))?\n\nEsta ação é permanente e irreversível.\n\n👉 Responda com *Sim* para confirmar ou *Não* para cancelar.", countEv, countRt)
 		_ = s.tg.SendMessage(ctx, chatID, msg)
 
 	case "/sonar", "$":
@@ -1676,6 +1767,11 @@ func matchFastPath(text string) (string, bool) {
 	// 2. Limpeza com Confirmação (Prioridade para segurança)
 	// Aceita sinônimos de exclusão: apagar, deletar, limpar, remover, excluir, zerar, eliminar, resetar...
 	if synonyms.MatchCanonical(tokens, "apagar") {
+		// Se for apagar tudo / deletar tudo / limpar tudo (sem especificar apenas agenda ou lembrete)
+		if clean == "apagar tudo" || clean == "deletar tudo" || clean == "limpar tudo" || clean == "zerar tudo" || clean == "excluir tudo" ||
+			(synonyms.MatchCanonical(tokens, "todo") && len(tokens) <= 2) {
+			return "/limpar_tudo", true
+		}
 		if synonyms.MatchCanonical(tokens, "lembrete") {
 			if strings.Contains(clean, "limpar") || strings.Contains(clean, "zerar") || synonyms.MatchCanonical(tokens, "todo") || len(tokens) <= 3 {
 				return "/limpar_lembretes", true

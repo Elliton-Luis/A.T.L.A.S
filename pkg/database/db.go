@@ -531,6 +531,35 @@ func (db *DB) FindEventoByDesc(ctx context.Context, term string) (int64, string,
 	return id, desc, err
 }
 
+// DeleteEventosByDesc searches and deletes all pending events matching a description term.
+func (db *DB) DeleteEventosByDesc(ctx context.Context, term string) (int64, string, error) {
+	var desc string
+	err := db.QueryRowContext(ctx, "SELECT descricao FROM eventos WHERE descricao LIKE ? AND status = 'pendente' ORDER BY id DESC LIMIT 1", "%"+term+"%").Scan(&desc)
+	if err != nil {
+		return 0, "", err
+	}
+	res, err := db.ExecContext(ctx, "DELETE FROM eventos WHERE descricao = ? AND status = 'pendente'", desc)
+	if err != nil {
+		return 0, desc, err
+	}
+	affected, _ := res.RowsAffected()
+	return affected, desc, nil
+}
+
+// GetLatestRoutine returns the most recently created routine.
+func (db *DB) GetLatestRoutine(ctx context.Context) (*RotinaProativa, error) {
+	var r RotinaProativa
+	err := db.QueryRowContext(ctx, `
+		SELECT id, nome, horario, tipo, prompt_custom, ativo, ultima_execucao, criado_em
+		FROM rotinas_proativas
+		ORDER BY id DESC LIMIT 1
+	`).Scan(&r.ID, &r.Nome, &r.Horario, &r.Tipo, &r.PromptCustom, &r.Ativo, &r.UltimaExecucao, &r.CriadoEm)
+	if err != nil {
+		return nil, err
+	}
+	return &r, nil
+}
+
 // FindGoalByTitle searches an active goal by title term.
 func (db *DB) FindGoalByTitle(ctx context.Context, term string) (int64, string, error) {
 	var id int64

@@ -42,6 +42,7 @@ type IntentResult struct {
 	Descricao                 string `json:"descricao,omitempty"`
 	Frequencia                string `json:"frequencia,omitempty"` // "pontual", "diario", "semanal", "mensal"
 	DiaSemana                 *int   `json:"dia_semana,omitempty"` // 0=Domingo, 1=Segunda, ..., 6=Sábado
+	DiasSemana                []int  `json:"dias_semana,omitempty"` // Múltiplos dias da semana (0=Dom a 6=Sáb) para semanas com exceções
 	DiaMes                    *int   `json:"dia_mes,omitempty"`    // 1 a 31
 	HorarioOficial            string `json:"horario_oficial,omitempty"`
 	EstimativaDeslocamentoMin int    `json:"estimativa_deslocamento_min,omitempty"`
@@ -281,6 +282,7 @@ Classifique a intenção estritamente em uma das opções abaixo e responda EXCL
 }
 
 5. Para compromissos / eventos na agenda (PONTUAIS ou RECORRENTES):
+Aceite variações naturais como: "marque", "anote", "agende", "crie um compromisso", "coloque na minha agenda", "tenho X amanhã às Y", "anotar compromisso toda semana exceto...":
 {
   "tipo": "evento",
   "complexidade": "simples",
@@ -288,7 +290,8 @@ Classifique a intenção estritamente em uma das opções abaixo e responda EXCL
   "frequencia": "pontual" ou "diario" ou "semanal" ou "mensal",
   "horario": "HH:MM",
   "horario_oficial": "YYYY-MM-DD HH:MM:SS" (obrigatório se frequencia for "pontual"),
-  "dia_semana": 0 a 6 (0=Domingo, 1=Segunda, 2=Terça, 3=Quarta, 4=Quinta, 5=Sexta, 6=Sábado; use apenas se frequencia for "semanal"),
+  "dia_semana": 0 a 6 (se for apenas um dia da semana, 0=Dom, 1=Seg, 2=Ter, 3=Qua, 4=Qui, 5=Sex, 6=Sáb),
+  "dias_semana": [1, 2, 3] (obrigatório quando o usuário indicar múltiplos dias ou exceções na semana, ex: "segunda a sexta" -> [1,2,3,4,5], "exceto domingo e segunda" -> [2,3,4,5,6], "terça e quinta" -> [2,4]),
   "dia_mes": 1 a 31 (use apenas se frequencia for "mensal"),
   "estimativa_deslocamento_min": 25,
   "estimativa_preparo_min": 35,
@@ -303,7 +306,7 @@ Classifique a intenção estritamente em uma das opções abaixo e responda EXCL
   "prazo": "YYYY-MM-DD HH:MM:SS" ou ""
 }
 
-7. Para lembretes diários recorrentes (ex: "todo dia às 09:00 mande uma mensagem..."):
+7. Para lembretes diários recorrentes (ex: "todo dia às 09:00 mande uma mensagem...", "crie um lembrete..."):
 {
   "tipo": "lembrete_diario",
   "complexidade": "simples",
@@ -311,12 +314,12 @@ Classifique a intenção estritamente em uma das opções abaixo e responda EXCL
   "mensagem": "Mensagem exata a ser disparada todo dia"
 }
 
-8. Para ações do app e buscas na web (liturgia, noticias, resumir_link, apagar_rotina, listar_agenda, ver_calendario, listar_lembretes, limpar_agenda, limpar_lembretes, etc.):
+8. Para ações do app, buscas e exclusões ("delete o dentista", "apague a reunião", "delete isso", "cancele o último", "apagar tudo", "limpar tudo"):
 {
   "tipo": "acao",
-  "acao": "liturgia" ou "noticias" ou "resumir_link" ou "apagar_rotina" ou "alterar_rotina" ou "toggle_rotina" ou "concluir_evento" ou "apagar_evento" ou "limpar_agenda" ou "limpar_lembretes" ou "atualizar_meta" ou "fazer_backup" ou "listar_agenda" (apenas para compromissos de hoje) ou "ver_calendario" (grade de emojis e compromissos do mês inteiro) ou "listar_lembretes" ou "ver_perfil",
+  "acao": "apagar_evento" (para apagar 1 evento por nome ou "isso"), "apagar_rotina" (para apagar 1 rotina/lembrete), "limpar_agenda" (apagar todos os eventos), "limpar_lembretes" (apagar todos os lembretes), "limpar_tudo" (apagar agenda E lembretes), "liturgia", "noticias", "resumir_link", "alterar_rotina", "toggle_rotina", "concluir_evento", "atualizar_meta", "fazer_backup", "listar_agenda", "ver_calendario", "listar_lembretes", "ver_perfil",
   "id": 0,
-  "termo": "palavra-chave",
+  "termo": "palavra-chave" (ex: "dentista", "reuniao", ou "isso" se for para apagar o último criado),
   "url": "https://...",
   "horario": "HH:MM",
   "progresso": 80

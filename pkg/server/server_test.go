@@ -257,6 +257,50 @@ func TestClearAllRoutinesWithConfirmation(t *testing.T) {
 	}
 }
 
+func TestClearAllDataWithConfirmation(t *testing.T) {
+	tmpDir, err := os.MkdirTemp("", "atlas_clear_all_test_*")
+	if err != nil {
+		t.Fatalf("failed to create temp dir: %v", err)
+	}
+	defer os.RemoveAll(tmpDir)
+
+	dbPath := filepath.Join(tmpDir, "atlas.db")
+	db, err := database.Open(dbPath, "", "")
+	if err != nil {
+		t.Fatalf("failed to open database: %v", err)
+	}
+	defer db.Close()
+
+	ctx := context.Background()
+	_, _ = db.InsertEventoCompleto(ctx, "Dentista", "2026-11-20 10:00:00", "09:00", "09:30", "pontual", nil, nil, "", 20, 30)
+	_, _ = db.InsertRoutine(ctx, "Tomar creatina", "09:00", "custom", nil)
+
+	cfg := &config.Config{
+		DBPath:         dbPath,
+		TelegramChatID: 999999,
+	}
+	srv := &Server{
+		cfg: cfg,
+		db:  db,
+	}
+
+	chatID := int64(999999)
+
+	// Simular confirmação "Sim" para limpar tudo
+	_ = srv.db.SavePendingConfirmation(ctx, chatID, "limpar_tudo", 0, "")
+	pending, _ := srv.db.GetPendingConfirmation(ctx, chatID)
+	handled, reply := srv.handlePendingConfirmation(ctx, chatID, "Sim", pending)
+	if !handled || !strings.Contains(reply, "completamente limpo") {
+		t.Errorf("expected clean message, got: %s", reply)
+	}
+
+	evCount, _ := db.CountAllEventos(ctx)
+	rtCount, _ := db.CountAllRoutines(ctx)
+	if evCount != 0 || rtCount != 0 {
+		t.Errorf("expected 0 events and 0 routines, got %d events and %d routines", evCount, rtCount)
+	}
+}
+
 func TestSonarBridgeCommand(t *testing.T) {
 	sonarClient := sonar.NewClient("", "Li3cht3nst3in2", "/home/chocotonilitz/Programacao/projetos/sonar/sonar_bridge.php", "/home/chocotonilitz/Programacao/projetos")
 
@@ -296,7 +340,9 @@ func TestMatchFastPathPriorities(t *testing.T) {
 		{"remover eventos", "/limpar_agenda", true},
 		{"zerar compromissos", "/limpar_agenda", true},
 		{"eliminar tarefas", "/limpar_agenda", true},
-		{"deletar tudo", "/limpar_agenda", true},
+		{"deletar tudo", "/limpar_tudo", true},
+		{"limpar tudo", "/limpar_tudo", true},
+		{"apagar tudo", "/limpar_tudo", true},
 		{"limpar lembretes", "/limpar_lembretes", true},
 		{"apagar todos os lembretes", "/limpar_lembretes", true},
 		{"deletar rotinas", "/limpar_lembretes", true},
