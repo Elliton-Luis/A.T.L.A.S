@@ -371,6 +371,8 @@ func TestMatchFastPathPriorities(t *testing.T) {
 		{"briefing matinal", "/briefing", true},
 		{"review", "/review", true},
 		{"emails", "/emails", true},
+		{"meus ultimos emails", "/emails", true},
+		{"meus últimos e-mails", "/emails", true},
 		{"ver emails", "/emails", true},
 		{"o que tem no meu email", "/emails", true},
 		{"o que tem de interessante no meu e-mail?", "/emails", true},
