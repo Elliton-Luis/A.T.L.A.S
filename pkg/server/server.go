@@ -527,6 +527,19 @@ func (s *Server) handlePendingConfirmation(ctx context.Context, chatID int64, in
 			return true, fmt.Sprintf("✅ Mantive o compromisso anterior e adicionei o novo:\n\n%s", newReply)
 		}
 		return true, newReply
+
+	case "limpar_agenda":
+		if isNo {
+			return true, "👍 Operação cancelada. Seus compromissos continuam intactos na agenda."
+		}
+		if isYes {
+			total, err := s.db.ClearAllEventos(ctx)
+			if err != nil {
+				return true, "⚠️ Ocorreu um erro ao tentar limpar os compromissos."
+			}
+			return true, fmt.Sprintf("🗑️ Agenda limpa com sucesso. Todos os *%d* compromissos foram removidos.", total)
+		}
+		return true, "⚠️ Confirmação não compreendida. Por segurança, sua agenda foi mantida intacta."
 	}
 
 	return false, ""
@@ -810,6 +823,14 @@ func (s *Server) executeAppAction(ctx context.Context, intent *nlu.IntentResult)
 		}
 		return "⚠️ Não localizei o compromisso para excluir."
 
+	case "limpar_agenda":
+		count, _ := s.db.CountAllEventos(ctx)
+		if count == 0 {
+			return "📅 Sua agenda já está limpa. Não há nenhum compromisso registrado."
+		}
+		_ = s.db.SavePendingConfirmation(ctx, s.cfg.TelegramChatID, "limpar_agenda", 0, "")
+		return fmt.Sprintf("⚠️ *Atenção:* Você tem certeza de que deseja *apagar todos os %d compromissos* da sua agenda?\n\nEsta ação é permanente e irreversível.\n\n👉 Responda com *Sim* para confirmar ou *Não* para cancelar.", count)
+
 	case "atualizar_meta":
 		if intent.Termo != "" {
 			id, title, err := s.db.FindGoalByTitle(ctx, intent.Termo)
@@ -1020,6 +1041,16 @@ func (s *Server) handleCommand(ctx context.Context, chatID int64, cmdText string
 			}
 		}
 		_ = s.tg.SendMessage(ctx, chatID, "Uso: `/apagar <id>` (ex: `/apagar 3`)")
+
+	case "/limpar", "/limpar_agenda", "/limpar_eventos", "/reset_agenda":
+		count, _ := s.db.CountAllEventos(ctx)
+		if count == 0 {
+			_ = s.tg.SendMessage(ctx, chatID, "📅 Sua agenda já está limpa. Não há nenhum compromisso registrado.")
+			return
+		}
+		_ = s.db.SavePendingConfirmation(ctx, chatID, "limpar_agenda", 0, "")
+		msg := fmt.Sprintf("⚠️ *Atenção:* Você tem certeza de que deseja *apagar todos os %d compromissos* da sua agenda?\n\nEsta ação é permanente e irreversível.\n\n👉 Responda com *Sim* para confirmar ou *Não* para cancelar.", count)
+		_ = s.tg.SendMessage(ctx, chatID, msg)
 
 	case "/rotina":
 		if len(parts) >= 3 && strings.ToLower(parts[2]) == "toggle" {
@@ -1298,6 +1329,8 @@ func matchFastPath(text string) (string, bool) {
 		return "/ajuda", true
 	case "backup", "fazer backup":
 		return "/backup", true
+	case "limpar agenda", "limpar compromissos", "limpar tudo", "apagar agenda", "apagar todos os compromissos", "apagar todos compromissos", "excluir todos os compromissos", "limpar todos os compromissos", "zerar agenda", "zerar compromissos", "apagar meus compromissos":
+		return "/limpar_agenda", true
 	}
 
 	return "", false

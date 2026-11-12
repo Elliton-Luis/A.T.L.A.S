@@ -507,6 +507,22 @@ func (db *DB) DeleteEvento(ctx context.Context, id int64) error {
 	return err
 }
 
+// CountAllEventos returns total number of events in the database.
+func (db *DB) CountAllEventos(ctx context.Context) (int, error) {
+	var count int
+	err := db.QueryRowContext(ctx, "SELECT COUNT(*) FROM eventos").Scan(&count)
+	return count, err
+}
+
+// ClearAllEventos deletes all events and returns the number of deleted rows.
+func (db *DB) ClearAllEventos(ctx context.Context) (int64, error) {
+	res, err := db.ExecContext(ctx, "DELETE FROM eventos")
+	if err != nil {
+		return 0, err
+	}
+	return res.RowsAffected()
+}
+
 // FindEventoByDesc searches an active event by description term.
 func (db *DB) FindEventoByDesc(ctx context.Context, term string) (int64, string, error) {
 	var id int64

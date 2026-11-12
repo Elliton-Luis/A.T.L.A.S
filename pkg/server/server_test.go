@@ -10,6 +10,7 @@ import (
 	"testing"
 
 	"atlas/pkg/config"
+	"atlas/pkg/database"
 )
 
 func TestServerEndpoints(t *testing.T) {
@@ -137,5 +138,64 @@ func TestEventConfirmationReplacement(t *testing.T) {
 	// Confirmar que o evento não foi apagado
 	if _, err := srv.db.GetEventoByID(ctx, latest.ID); err != nil {
 		t.Errorf("event should have been kept after 'Não'")
+	}
+}
+
+func TestClearAllEventosWithConfirmation(t *testing.T) {
+	tmpDir, err := os.MkdirTemp("", "atlas_clear_test_*")
+	if err != nil {
+		t.Fatalf("failed to create temp dir: %v", err)
+	}
+	defer os.RemoveAll(tmpDir)
+
+	dbPath := filepath.Join(tmpDir, "test.sqlite")
+	db, err := database.Open(dbPath, "", "")
+	if err != nil {
+		t.Fatalf("failed to open test db: %v", err)
+	}
+	defer db.Close()
+
+	ctx := context.Background()
+	_, _ = db.InsertEvento(ctx, "Evento 1", "2026-11-20 10:00:00", "", "")
+	_, _ = db.InsertEvento(ctx, "Evento 2", "2026-11-20 14:00:00", "", "")
+
+	count, _ := db.CountAllEventos(ctx)
+	if count != 2 {
+		t.Fatalf("expected 2 events, got %d", count)
+	}
+
+	srv := &Server{
+		db:  db,
+		cfg: &config.Config{TelegramChatID: 12345},
+	}
+	chatID := int64(12345)
+
+	// 1. Salva confirmação pendente de limpar agenda
+	if err := srv.db.SavePendingConfirmation(ctx, chatID, "limpar_agenda", 0, ""); err != nil {
+		t.Fatalf("failed to save pending confirmation: %v", err)
+	}
+
+	// 2. Testa resposta "Não" (deve cancelar e manter eventos)
+	pending, _ := srv.db.GetPendingConfirmation(ctx, chatID)
+	handledNo, replyNo := srv.handlePendingConfirmation(ctx, chatID, "Não", pending)
+	if !handledNo || !strings.Contains(replyNo, "Operação cancelada") {
+		t.Errorf("expected cancellation message, got: %s", replyNo)
+	}
+	countAfterNo, _ := db.CountAllEventos(ctx)
+	if countAfterNo != 2 {
+		t.Fatalf("expected 2 events kept after 'Não', got %d", countAfterNo)
+	}
+
+	// 3. Salva confirmação pendente novamente e responde "Sim"
+	_ = srv.db.SavePendingConfirmation(ctx, chatID, "limpar_agenda", 0, "")
+	pending2, _ := srv.db.GetPendingConfirmation(ctx, chatID)
+	handledYes, replyYes := srv.handlePendingConfirmation(ctx, chatID, "Sim", pending2)
+	if !handledYes || !strings.Contains(replyYes, "Agenda limpa com sucesso") {
+		t.Errorf("expected success message, got: %s", replyYes)
+	}
+
+	countAfterYes, _ := db.CountAllEventos(ctx)
+	if countAfterYes != 0 {
+		t.Fatalf("expected 0 events after 'Sim', got %d", countAfterYes)
 	}
 }
