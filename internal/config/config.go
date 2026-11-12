@@ -73,7 +73,7 @@ func Load(envPath string) (*Config, error) {
 		DBPath:              getEnv("DB_PATH", "data/atlas.sqlite"),
 		Timezone:            tzName,
 		Location:            loc,
-		HTTPPort:            getEnv("HTTP_PORT", "8080"),
+		HTTPPort:            getEnv("PORT", getEnv("HTTP_PORT", "8080")),
 		BackupHour:          getEnv("BACKUP_HOUR", "03:00"),
 		CalendarToken:       getEnv("CALENDAR_TOKEN", "atlas_cal_secret_token"),
 		PublicURL:           strings.TrimSuffix(getEnv("PUBLIC_URL", "http://localhost:8080"), "/"),
