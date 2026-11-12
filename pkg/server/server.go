@@ -19,20 +19,22 @@ import (
 	"atlas/pkg/hud"
 	"atlas/pkg/nlu"
 	"atlas/pkg/scheduler"
+	"atlas/pkg/sonar"
 	"atlas/pkg/stt"
 	"atlas/pkg/telegram"
 	"atlas/pkg/web"
 )
 
 type Server struct {
-	cfg        *config.Config
-	db         *database.DB
-	tg         *telegram.Client
-	sttClient  *stt.Client
-	nluClient  *nlu.Client
-	engine     *scheduler.Engine
-	hudHandler *hud.Handler
-	mux        *http.ServeMux
+	cfg         *config.Config
+	db          *database.DB
+	tg          *telegram.Client
+	sttClient   *stt.Client
+	nluClient   *nlu.Client
+	engine      *scheduler.Engine
+	hudHandler  *hud.Handler
+	sonarClient *sonar.Client
+	mux         *http.ServeMux
 }
 
 // New initializes all ATLAS modules and registers standard routes.
@@ -51,16 +53,18 @@ func New(cfg *config.Config) (*Server, error) {
 	nluClient := nlu.NewClient(cfg.GroqAPIKey, cfg.NvidiaAPIKey, cfg.NvidiaModel, cfg.MaxTokensQuick, cfg.MaxTokensHeavy, cfg.MaxTokensResearch)
 	engine := scheduler.NewEngine(cfg, db, tg, nluClient)
 	hudHandler := hud.NewHandler(cfg, db)
+	sonarClient := sonar.NewClient(cfg.SonarBridgeURL, cfg.SonarBridgeToken, cfg.SonarCLIPath, cfg.ProjectsDir)
 
 	s := &Server{
-		cfg:        cfg,
-		db:         db,
-		tg:         tg,
-		sttClient:  sttClient,
-		nluClient:  nluClient,
-		engine:     engine,
-		hudHandler: hudHandler,
-		mux:        http.NewServeMux(),
+		cfg:         cfg,
+		db:          db,
+		tg:          tg,
+		sttClient:   sttClient,
+		nluClient:   nluClient,
+		engine:      engine,
+		hudHandler:  hudHandler,
+		sonarClient: sonarClient,
+		mux:         http.NewServeMux(),
 	}
 
 	s.registerRoutes()
@@ -925,9 +929,11 @@ func (s *Server) handleCommand(ctx context.Context, chatID int64, cmdText string
 • 📅 */hoje* — Agenda de hoje com tempos de preparo e saída (+15%)
 • 🎯 */metas* — Suas metas e progresso
 • 📊 */tokens* — Relatório de consumo de tokens e limites
-• 🗓️ */calendario* — Link para sincronizar no Google/Apple Calendar
+• 🗓️ */calendario* ou */mes* — Grade visual em emojis e link iCal
+• 🛰️ */sonar <cmd>* ou *$ <cmd>* — Terminal Linux local (Zero Tokens)
 
 💬 *Comandos Naturais (Voz ou Texto):*
+👉 _"$ git status"_ ou _"/sonar ls -la"_
 👉 _"Anotar uma ideia: criar um app de assinatura para barbeiros"_
 👉 _"Adicione à ideia anterior que o plano mensal será R$ 49"_
 👉 _"Lembre-se que eu sou desenvolvedor e acordo às 06:30"_
@@ -1051,6 +1057,31 @@ func (s *Server) handleCommand(ctx context.Context, chatID int64, cmdText string
 		_ = s.db.SavePendingConfirmation(ctx, chatID, "limpar_agenda", 0, "")
 		msg := fmt.Sprintf("⚠️ *Atenção:* Você tem certeza de que deseja *apagar todos os %d compromissos* da sua agenda?\n\nEsta ação é permanente e irreversível.\n\n👉 Responda com *Sim* para confirmar ou *Não* para cancelar.", count)
 		_ = s.tg.SendMessage(ctx, chatID, msg)
+
+	case "/sonar", "$":
+		cmdStr := strings.TrimSpace(strings.TrimPrefix(cmdText, cmd))
+		if cmdStr == "" {
+			_ = s.tg.SendMessage(ctx, chatID, "🛰️ *ATLAS ⇄ SONAR Bridge (Terminal Linux)*\n\nExecute comandos bash diretamente na sua máquina local com zero tokens:\n\n• `/sonar git status`\n• `/sonar git diff`\n• `/sonar ls -la`\n• `/sonar df -h`\n• `$ <comando bash>`\n\n_Atalho rápido: use `$ comando` para executar direto!_")
+			return
+		}
+
+		res, err := s.sonarClient.Execute(ctx, cmdStr, "")
+		if err != nil {
+			_ = s.tg.SendMessage(ctx, chatID, fmt.Sprintf("⚠️ *Falha na execução Sonar:*\n`%v`", err))
+			return
+		}
+
+		header := fmt.Sprintf("🛰️ *SONAR CLI* (`$ %s` • Zero Tokens)\n", cmdStr)
+		cleanOut := strings.TrimSpace(res.Output)
+		if cleanOut == "" {
+			_ = s.tg.SendMessage(ctx, chatID, fmt.Sprintf("%s✅ Executado com sucesso (sem retorno de texto).", header))
+			return
+		}
+
+		if len(cleanOut) > 3500 {
+			cleanOut = cleanOut[:3450] + "\n... [saída truncada]"
+		}
+		_ = s.tg.SendMessage(ctx, chatID, fmt.Sprintf("%s```text\n%s\n```", header, cleanOut))
 
 	case "/rotina":
 		if len(parts) >= 3 && strings.ToLower(parts[2]) == "toggle" {
@@ -1331,6 +1362,18 @@ func matchFastPath(text string) (string, bool) {
 		return "/backup", true
 	case "limpar agenda", "limpar compromissos", "limpar tudo", "apagar agenda", "apagar todos os compromissos", "apagar todos compromissos", "excluir todos os compromissos", "limpar todos os compromissos", "zerar agenda", "zerar compromissos", "apagar meus compromissos":
 		return "/limpar_agenda", true
+	}
+
+	// Atalhos do Sonar CLI (Terminal Linux Zero Tokens)
+	if strings.HasPrefix(norm, "sonar ") {
+		return "/sonar " + strings.TrimPrefix(norm, "sonar "), true
+	}
+	if strings.HasPrefix(norm, "$ ") || strings.HasPrefix(norm, "$") {
+		return "/sonar " + strings.TrimPrefix(norm, "$"), true
+	}
+	if norm == "git status" || norm == "git diff" || norm == "git branch" || norm == "git log" ||
+		norm == "pwd" || norm == "ls" || norm == "ls -la" || norm == "df -h" || norm == "free -m" || norm == "uptime" {
+		return "/sonar " + norm, true
 	}
 
 	return "", false

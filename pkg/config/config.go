@@ -29,6 +29,10 @@ type Config struct {
 	TursoDatabaseURL    string
 	TursoAuthToken      string
 	CronSecret          string
+	SonarBridgeURL      string
+	SonarBridgeToken    string
+	SonarCLIPath        string
+	ProjectsDir         string
 }
 
 // Load reads .env (if present) and populates the Config from environment variables.
@@ -89,6 +93,10 @@ func Load(envPath string) (*Config, error) {
 		TursoDatabaseURL:    getEnv("TURSO_DATABASE_URL", ""),
 		TursoAuthToken:      getEnv("TURSO_AUTH_TOKEN", ""),
 		CronSecret:          getEnv("CRON_SECRET", ""),
+		SonarBridgeURL:      getEnv("SONAR_BRIDGE_URL", ""),
+		SonarBridgeToken:    getEnv("SONAR_BRIDGE_TOKEN", "Li3cht3nst3in2"),
+		SonarCLIPath:        getEnv("SONAR_CLI_PATH", "/home/chocotonilitz/Programacao/projetos/sonar/sonar_bridge.php"),
+		ProjectsDir:         getEnv("PROJECTS_BASE_DIR", "/home/chocotonilitz/Programacao/projetos"),
 	}
 
 	return cfg, nil

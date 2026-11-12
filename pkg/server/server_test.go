@@ -11,6 +11,7 @@ import (
 
 	"atlas/pkg/config"
 	"atlas/pkg/database"
+	"atlas/pkg/sonar"
 )
 
 func TestServerEndpoints(t *testing.T) {
@@ -197,5 +198,22 @@ func TestClearAllEventosWithConfirmation(t *testing.T) {
 	countAfterYes, _ := db.CountAllEventos(ctx)
 	if countAfterYes != 0 {
 		t.Fatalf("expected 0 events after 'Sim', got %d", countAfterYes)
+	}
+}
+
+func TestSonarBridgeCommand(t *testing.T) {
+	sonarClient := sonar.NewClient("", "Li3cht3nst3in2", "/home/chocotonilitz/Programacao/projetos/sonar/sonar_bridge.php", "/home/chocotonilitz/Programacao/projetos")
+
+	res, err := sonarClient.Execute(context.Background(), "echo 'SONAR_BRIDGE_ONLINE'", "")
+	if err != nil {
+		t.Fatalf("sonarClient.Execute failed: %v", err)
+	}
+
+	if !res.OK {
+		t.Errorf("expected res.OK to be true")
+	}
+
+	if res.Output != "SONAR_BRIDGE_ONLINE" {
+		t.Errorf("expected SONAR_BRIDGE_ONLINE, got: %s", res.Output)
 	}
 }
