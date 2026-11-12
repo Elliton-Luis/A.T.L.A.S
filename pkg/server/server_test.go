@@ -7,7 +7,7 @@ import (
 	"path/filepath"
 	"testing"
 
-	"atlas/internal/config"
+	"atlas/pkg/config"
 )
 
 func TestServerEndpoints(t *testing.T) {

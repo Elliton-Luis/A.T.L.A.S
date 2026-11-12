@@ -12,7 +12,7 @@ run: build
 	./$(BINARY_NAME)
 
 test:
-	go test -v ./internal/...
+	go test -v ./pkg/...
 
 clean:
 	rm -rf bin/

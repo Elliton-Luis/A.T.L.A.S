@@ -7,10 +7,10 @@ import (
 	"path/filepath"
 	"time"
 
-	"atlas/internal/config"
-	"atlas/internal/database"
-	"atlas/internal/nlu"
-	"atlas/internal/telegram"
+	"atlas/pkg/config"
+	"atlas/pkg/database"
+	"atlas/pkg/nlu"
+	"atlas/pkg/telegram"
 )
 
 type Engine struct {

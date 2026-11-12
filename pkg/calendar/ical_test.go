@@ -5,7 +5,7 @@ import (
 	"testing"
 	"time"
 
-	"atlas/internal/database"
+	"atlas/pkg/database"
 )
 
 func TestGenerateICS(t *testing.T) {

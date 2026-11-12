@@ -11,7 +11,7 @@ import (
 	"strings"
 	"time"
 
-	"atlas/internal/database"
+	"atlas/pkg/database"
 )
 
 type Client struct {

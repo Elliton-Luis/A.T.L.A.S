@@ -5,8 +5,8 @@ import (
 	"net/http"
 	"sync"
 
-	"atlas/internal/config"
-	"atlas/internal/server"
+	"atlas/pkg/config"
+	"atlas/pkg/server"
 )
 
 var (

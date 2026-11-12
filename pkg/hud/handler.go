@@ -7,8 +7,8 @@ import (
 	"net/http"
 	"time"
 
-	"atlas/internal/config"
-	"atlas/internal/database"
+	"atlas/pkg/config"
+	"atlas/pkg/database"
 )
 
 //go:embed template.html

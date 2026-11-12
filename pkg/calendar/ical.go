@@ -6,7 +6,7 @@ import (
 	"strings"
 	"time"
 
-	"atlas/internal/database"
+	"atlas/pkg/database"
 )
 
 // GenerateICS builds a standard RFC 5545 iCalendar (.ics) string for ATLAS events.

@@ -12,16 +12,16 @@ import (
 	"strings"
 	"time"
 
-	"atlas/internal/calculator"
-	"atlas/internal/calendar"
-	"atlas/internal/config"
-	"atlas/internal/database"
-	"atlas/internal/hud"
-	"atlas/internal/nlu"
-	"atlas/internal/scheduler"
-	"atlas/internal/stt"
-	"atlas/internal/telegram"
-	"atlas/internal/web"
+	"atlas/pkg/calculator"
+	"atlas/pkg/calendar"
+	"atlas/pkg/config"
+	"atlas/pkg/database"
+	"atlas/pkg/hud"
+	"atlas/pkg/nlu"
+	"atlas/pkg/scheduler"
+	"atlas/pkg/stt"
+	"atlas/pkg/telegram"
+	"atlas/pkg/web"
 )
 
 type Server struct {
