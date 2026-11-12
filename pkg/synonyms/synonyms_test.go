@@ -1,0 +1,46 @@
+package synonyms
+
+import (
+	"testing"
+)
+
+func TestCanonicalizeSynonyms(t *testing.T) {
+	// 1. Testa sinônimos de apagar
+	deleteWords := []string{"apagar", "deletar", "limpar", "remover", "excluir", "zerar", "eliminar"}
+	for _, w := range deleteWords {
+		canon := CanonicalizeWord(w)
+		if canon != "apagar" {
+			t.Errorf("word '%s' should canonicalize to 'apagar', got '%s'", w, canon)
+		}
+	}
+
+	// 2. Testa sinônimos de agenda
+	agendaWords := []string{"agenda", "compromissos", "eventos", "tarefas", "afazeres"}
+	for _, w := range agendaWords {
+		canon := CanonicalizeWord(w)
+		if canon != "agenda" {
+			t.Errorf("word '%s' should canonicalize to 'agenda', got '%s'", w, canon)
+		}
+	}
+
+	// 3. Testa sinônimos de lembretes
+	lembreteWords := []string{"lembrete", "lembretes", "rotinas", "avisos", "notificações"}
+	for _, w := range lembreteWords {
+		canon := CanonicalizeWord(w)
+		if canon != "lembrete" {
+			t.Errorf("word '%s' should canonicalize to 'lembrete', got '%s'", w, canon)
+		}
+	}
+
+	// 4. Frase complexa: "deletar todos os eventos" -> deve ter 'apagar', 'todo', 'agenda'
+	tokens := TokenizeAndCanonicalize("deletar todos os eventos")
+	if !HasPair(tokens, "apagar", "agenda") {
+		t.Errorf("expected tokens to contain 'apagar' and 'agenda', got: %v", tokens)
+	}
+
+	// 5. Frase: "exibir meu calendário" -> deve ter 'ver' e 'calendario'
+	tokensCal := TokenizeAndCanonicalize("exibir meu calendário")
+	if !HasPair(tokensCal, "ver", "calendario") {
+		t.Errorf("expected tokens to contain 'ver' and 'calendario', got: %v", tokensCal)
+	}
+}

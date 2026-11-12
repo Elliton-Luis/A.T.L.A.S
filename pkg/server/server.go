@@ -21,6 +21,7 @@ import (
 	"atlas/pkg/scheduler"
 	"atlas/pkg/sonar"
 	"atlas/pkg/stt"
+	"atlas/pkg/synonyms"
 	"atlas/pkg/telegram"
 	"atlas/pkg/web"
 )
@@ -1423,20 +1424,7 @@ func parseTimeFlexible(timeStr string, loc *time.Location) (time.Time, error) {
 
 func matchFastPath(text string) (string, bool) {
 	norm := strings.ToLower(strings.TrimSpace(text))
-	// Remove acentos para facilitar regex e correspondência semântica rápida
-	norm = strings.ReplaceAll(norm, "á", "a")
-	norm = strings.ReplaceAll(norm, "à", "a")
-	norm = strings.ReplaceAll(norm, "ã", "a")
-	norm = strings.ReplaceAll(norm, "â", "a")
-	norm = strings.ReplaceAll(norm, "é", "e")
-	norm = strings.ReplaceAll(norm, "ê", "e")
-	norm = strings.ReplaceAll(norm, "í", "i")
-	norm = strings.ReplaceAll(norm, "ó", "o")
-	norm = strings.ReplaceAll(norm, "ô", "o")
-	norm = strings.ReplaceAll(norm, "õ", "o")
-	norm = strings.ReplaceAll(norm, "ú", "u")
-	norm = strings.ReplaceAll(norm, "ç", "c")
-	clean := strings.Trim(norm, ".,!?\"'#;:")
+	clean := strings.Trim(synonyms.RemoveAccents(norm), ".,!?\"'#;:")
 
 	// 1. Terminal Sonar / Bash Shortcuts
 	if strings.HasPrefix(clean, "sonar ") {
@@ -1450,13 +1438,20 @@ func matchFastPath(text string) (string, bool) {
 		return "/sonar " + clean, true
 	}
 
+	tokens := synonyms.TokenizeAndCanonicalize(clean)
+
 	// 2. Limpeza com Confirmação (Prioridade para segurança)
-	if strings.Contains(clean, "limpar") || strings.Contains(clean, "apagar todos") || strings.Contains(clean, "zerar") || strings.Contains(clean, "excluir todos") {
-		if strings.Contains(clean, "lembrete") || strings.Contains(clean, "rotina") {
-			return "/limpar_lembretes", true
+	// Aceita sinônimos de exclusão: apagar, deletar, limpar, remover, excluir, zerar, eliminar, resetar...
+	if synonyms.MatchCanonical(tokens, "apagar") {
+		if synonyms.MatchCanonical(tokens, "lembrete") {
+			if strings.Contains(clean, "limpar") || strings.Contains(clean, "zerar") || synonyms.MatchCanonical(tokens, "todo") || len(tokens) <= 3 {
+				return "/limpar_lembretes", true
+			}
 		}
-		if strings.Contains(clean, "agenda") || strings.Contains(clean, "compromisso") || strings.Contains(clean, "evento") || strings.Contains(clean, "tudo") {
-			return "/limpar_agenda", true
+		if synonyms.MatchCanonical(tokens, "agenda") || synonyms.MatchCanonical(tokens, "todo") {
+			if strings.Contains(clean, "limpar") || strings.Contains(clean, "zerar") || synonyms.MatchCanonical(tokens, "todo") || len(tokens) <= 3 {
+				return "/limpar_agenda", true
+			}
 		}
 	}
 
@@ -1466,17 +1461,26 @@ func matchFastPath(text string) (string, bool) {
 	}
 
 	// 4. CALENDÁRIO / MÊS COMPLETO (Separado categoricamente de "hoje")
-	// Captura: "calendario", "me mostre o calendario", "mostre o calendario", "ver calendario", "calendario do mes", "ver mes", "grade", etc.
-	if strings.Contains(clean, "calendario") || strings.Contains(clean, "do mes") || strings.Contains(clean, "deste mes") ||
-		strings.Contains(clean, "grade") || clean == "mes" || clean == "ver mes" || clean == "meu mes" || clean == "mes atual" {
-		return "/mes", true
+	// Captura: "calendario", "me mostre o calendario", "ver calendario", "calendario do mes", "ver mes", "grade", "mensal", etc.
+	if synonyms.MatchCanonical(tokens, "calendario") || strings.Contains(clean, "do mes") || strings.Contains(clean, "deste mes") {
+		if !strings.Contains(clean, "marcar") && !strings.Contains(clean, "agendar") && !strings.Contains(clean, "adicionar") {
+			return "/mes", true
+		}
 	}
 
 	// 5. HOJE (Apenas a agenda do dia atual com tempos de preparo e saída)
 	if strings.Contains(clean, "hoje") || strings.Contains(clean, "pra hoje") || strings.Contains(clean, "de hoje") ||
 		strings.Contains(clean, "o que tenho hoje") || strings.Contains(clean, "agenda de hoje") ||
-		clean == "agenda" || clean == "minha agenda" || clean == "compromissos" || clean == "meus compromissos" || clean == "ver agenda" {
-		return "/hoje", true
+		strings.Contains(clean, "compromissos de hoje") {
+		if !strings.Contains(clean, "marcar") && !strings.Contains(clean, "agendar") && !strings.Contains(clean, "lembre-me") && !strings.Contains(clean, "anotar") {
+			return "/hoje", true
+		}
+	}
+	// Consulta direta de agenda / compromissos sem especificar outra coisa: "agenda", "minha agenda", "compromissos", "ver agenda", "listar tarefas"
+	if synonyms.MatchCanonical(tokens, "agenda") && (len(tokens) <= 3 || synonyms.MatchCanonical(tokens, "ver")) {
+		if !strings.Contains(clean, "marcar") && !strings.Contains(clean, "agendar") && !strings.Contains(clean, "adicionar") && !strings.Contains(clean, "nova") {
+			return "/hoje", true
+		}
 	}
 
 	// 6. Perfil / Memória Permanente
@@ -1486,22 +1490,27 @@ func matchFastPath(text string) (string, bool) {
 	}
 
 	// 7. Metas / Objetivos
-	if strings.Contains(clean, "metas") || strings.Contains(clean, "minhas metas") || strings.Contains(clean, "meus objetivos") ||
-		clean == "metas" || clean == "objetivos" || clean == "ver metas" {
-		return "/metas", true
+	// Captura: "metas", "minhas metas", "ver metas", "listar objetivos", "consultar alvos"
+	if synonyms.MatchCanonical(tokens, "meta") && (clean == "metas" || clean == "objetivos" || synonyms.MatchCanonical(tokens, "ver") || len(tokens) <= 3) {
+		if !strings.Contains(clean, "criar") && !strings.Contains(clean, "nova") && !strings.Contains(clean, "definir") {
+			return "/metas", true
+		}
 	}
 
 	// 8. Ideias / Projetos (quando NÃO for anotação de nova ideia)
-	if (strings.Contains(clean, "minhas ideias") || strings.Contains(clean, "ver ideias") || strings.Contains(clean, "listar ideias") ||
-		clean == "ideias" || clean == "projetos" || clean == "meus projetos") &&
-		!strings.Contains(clean, "anotar") && !strings.Contains(clean, "nova ideia") && !strings.Contains(clean, "tive uma ideia") {
-		return "/ideias", true
+	// Captura: "ideias", "minhas ideias", "ver projetos", "listar ideias"
+	if synonyms.MatchCanonical(tokens, "ideia") && (clean == "ideias" || clean == "projetos" || synonyms.MatchCanonical(tokens, "ver") || len(tokens) <= 3) {
+		if !strings.Contains(clean, "anotar") && !strings.Contains(clean, "nova") && !strings.Contains(clean, "tive") {
+			return "/ideias", true
+		}
 	}
 
-	// 9. Lembretes / Rotinas
-	if strings.Contains(clean, "meus lembretes") || strings.Contains(clean, "minhas rotinas") ||
-		clean == "lembretes" || clean == "rotinas" || clean == "ver rotinas" || clean == "ver lembretes" {
-		return "/lembretes", true
+	// 9. Lembretes / Rotinas (quando NÃO for criação)
+	// Captura: "lembretes", "minhas rotinas", "ver rotinas", "listar avisos", "mostrar alarmes"
+	if synonyms.MatchCanonical(tokens, "lembrete") && (clean == "lembretes" || clean == "rotinas" || synonyms.MatchCanonical(tokens, "ver") || len(tokens) <= 3) {
+		if !strings.Contains(clean, "criar") && !strings.Contains(clean, "novo") && !strings.Contains(clean, "lembrar") {
+			return "/lembretes", true
+		}
 	}
 
 	// 10. Tokens / Telemetria
