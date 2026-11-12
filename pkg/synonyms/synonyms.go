@@ -114,10 +114,21 @@ var canonicalMap = map[string]string{
 	"inteiro": "todo",
 	"inteira": "todo",
 	"geral":  "todo",
+
+	// E-mail e Caixa de Entrada -> "email"
+	"email":    "email",
+	"emails":   "email",
+	"e-mail":   "email",
+	"e-mails":  "email",
+	"inbox":    "email",
+	"correio":  "email",
+	"mensagens": "email",
 }
 
 // RemoveAccents converte caracteres acentuados para equivalentes ASCII simples.
 func RemoveAccents(s string) string {
+	s = strings.ReplaceAll(s, "e-mail", "email")
+	s = strings.ReplaceAll(s, "e-mails", "emails")
 	s = strings.ReplaceAll(s, "á", "a")
 	s = strings.ReplaceAll(s, "à", "a")
 	s = strings.ReplaceAll(s, "ã", "a")

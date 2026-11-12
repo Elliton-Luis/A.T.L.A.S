@@ -373,6 +373,9 @@ func TestMatchFastPathPriorities(t *testing.T) {
 		{"emails", "/emails", true},
 		{"ver emails", "/emails", true},
 		{"o que tem no meu email", "/emails", true},
+		{"o que tem de interessante no meu e-mail?", "/emails", true},
+		{"leia meus e-mails", "/emails", true},
+		{"veja minha caixa de entrada", "/emails", true},
 	}
 
 	for _, tc := range testCases {

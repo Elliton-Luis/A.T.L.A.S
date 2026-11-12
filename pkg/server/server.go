@@ -874,6 +874,20 @@ func (s *Server) executeAppAction(ctx context.Context, intent *nlu.IntentResult)
 		}
 		return sb.String()
 
+	case "ler_emails", "emails":
+		if !s.emailReader.IsConfigured() {
+			return "📬 *Configuração de E-mail (Somente Leitura)*\n\nPara o ATLAS ler seus e-mails e destacar o que é importante, adicione no painel da Vercel (ou no arquivo `.env`):\n\n`IMAP_HOST=imap.gmail.com`\n`IMAP_PORT=993`\n`IMAP_USER=seu_email@gmail.com`\n`IMAP_PASS=sua_senha_de_app`"
+		}
+		unread, err := s.emailReader.FetchRecentUnread(ctx, 7)
+		if err != nil {
+			return fmt.Sprintf("⚠️ Falha ao ler e-mails: %v", err)
+		}
+		curated, err := email.CurateEmails(ctx, s.nluClient, unread)
+		if err != nil {
+			return "⚠️ Falha ao analisar e-mails."
+		}
+		return curated
+
 	case "resumir_link":
 		link := intent.URL
 		if link == "" {
@@ -1800,12 +1814,12 @@ func matchFastPath(text string) (string, bool) {
 	if clean == "review" || clean == "fechamento" || clean == "fechamento do dia" || clean == "auditoria do dia" {
 		return "/review", true
 	}
-	if clean == "email" || clean == "emails" || clean == "meu email" || clean == "meus emails" ||
-		strings.Contains(clean, "ler email") || strings.Contains(clean, "ler emails") ||
-		strings.Contains(clean, "ver emails") || strings.Contains(clean, "ver email") ||
-		strings.Contains(clean, "checar email") || strings.Contains(clean, "olhar email") ||
-		strings.Contains(clean, "tem algum email") || strings.Contains(clean, "o que tem no meu email") {
-		return "/emails", true
+
+	// E-mail (somente leitura e curadoria de mensagens)
+	if strings.Contains(clean, "email") || strings.Contains(clean, "inbox") || strings.Contains(clean, "caixa de entrada") || strings.Contains(clean, "correio") {
+		if !strings.Contains(clean, "meu email e ") && !strings.Contains(clean, "meu email:") && !strings.Contains(clean, "mudar email") {
+			return "/emails", true
+		}
 	}
 
 	tokens := synonyms.TokenizeAndCanonicalize(clean)
