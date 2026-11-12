@@ -15,12 +15,16 @@ import (
 	"atlas/pkg/calculator"
 	"atlas/pkg/calendar"
 	"atlas/pkg/config"
+	"atlas/pkg/crawler"
 	"atlas/pkg/database"
+	"atlas/pkg/documents"
 	"atlas/pkg/hud"
+	"atlas/pkg/interpreter"
 	"atlas/pkg/nlu"
 	"atlas/pkg/scheduler"
 	"atlas/pkg/sonar"
 	"atlas/pkg/stt"
+	"atlas/pkg/swarm"
 	"atlas/pkg/synonyms"
 	"atlas/pkg/telegram"
 	"atlas/pkg/web"
@@ -35,6 +39,9 @@ type Server struct {
 	engine      *scheduler.Engine
 	hudHandler  *hud.Handler
 	sonarClient *sonar.Client
+	interpreter *interpreter.Runner
+	crawler     *crawler.Crawler
+	swarm       *swarm.Orchestrator
 	mux         *http.ServeMux
 }
 
@@ -55,6 +62,9 @@ func New(cfg *config.Config) (*Server, error) {
 	engine := scheduler.NewEngine(cfg, db, tg, nluClient)
 	hudHandler := hud.NewHandler(cfg, db)
 	sonarClient := sonar.NewClient(cfg.SonarBridgeURL, cfg.SonarBridgeToken, cfg.SonarCLIPath, cfg.ProjectsDir)
+	interpreterRunner := interpreter.NewRunner(sonarClient)
+	webCrawler := crawler.New()
+	swarmOrch := swarm.NewOrchestrator(nluClient)
 
 	s := &Server{
 		cfg:         cfg,
@@ -65,6 +75,9 @@ func New(cfg *config.Config) (*Server, error) {
 		engine:      engine,
 		hudHandler:  hudHandler,
 		sonarClient: sonarClient,
+		interpreter: interpreterRunner,
+		crawler:     webCrawler,
+		swarm:       swarmOrch,
 		mux:         http.NewServeMux(),
 	}
 
@@ -210,10 +223,10 @@ func (s *Server) processIncomingMessage(ctx context.Context, msg *telegram.Messa
 	chatID := msg.Chat.ID
 	var inputText string
 
-	// 1. Extração de Texto ou Voz (com Groq Whisper)
+	// 1. Extração de Texto, Voz, Áudios ou Documentos (com Groq Whisper e Extrator de Documentos)
 	if msg.Text != "" {
 		inputText = strings.TrimSpace(msg.Text)
-	} else if msg.Caption != "" {
+	} else if msg.Caption != "" && msg.Document == nil && msg.Audio == nil {
 		inputText = strings.TrimSpace(msg.Caption)
 	} else if msg.Voice != nil && msg.Voice.FileID != "" {
 		tmpPath, err := s.tg.DownloadVoiceFile(ctx, msg.Voice.FileID)
@@ -231,6 +244,72 @@ func (s *Server) processIncomingMessage(ctx context.Context, msg *telegram.Messa
 			return
 		}
 		inputText = strings.TrimSpace(transcription)
+	} else if msg.Audio != nil && msg.Audio.FileID != "" {
+		tmpPath, err := s.tg.DownloadFileToTemp(ctx, msg.Audio.FileID, "atlas_audio_*")
+		if err != nil {
+			log.Printf("[Erro] Download de áudio falhou: %v\n", err)
+			_ = s.tg.SendMessage(ctx, chatID, "⚠️ Erro ao receber arquivo de áudio.")
+			return
+		}
+		defer os.Remove(tmpPath)
+
+		transcription, err := s.sttClient.Transcribe(ctx, tmpPath)
+		if err != nil {
+			log.Printf("[Erro] Transcrição falhou: %v\n", err)
+			_ = s.tg.SendMessage(ctx, chatID, "⚠️ Erro na transcrição de áudio.")
+			return
+		}
+		if msg.Caption != "" {
+			inputText = fmt.Sprintf("%s\n\n[Transcrição do Áudio]: %s", msg.Caption, strings.TrimSpace(transcription))
+		} else {
+			inputText = strings.TrimSpace(transcription)
+		}
+	} else if msg.Document != nil && msg.Document.FileID != "" {
+		if documents.IsAudio(msg.Document.FileName) {
+			tmpPath, err := s.tg.DownloadFileToTemp(ctx, msg.Document.FileID, "atlas_doc_audio_*")
+			if err != nil {
+				log.Printf("[Erro] Download de áudio falhou: %v\n", err)
+				_ = s.tg.SendMessage(ctx, chatID, "⚠️ Erro ao receber arquivo.")
+				return
+			}
+			defer os.Remove(tmpPath)
+
+			transcription, err := s.sttClient.Transcribe(ctx, tmpPath)
+			if err != nil {
+				log.Printf("[Erro] Transcrição falhou: %v\n", err)
+				_ = s.tg.SendMessage(ctx, chatID, "⚠️ Erro na transcrição do áudio.")
+				return
+			}
+			if msg.Caption != "" {
+				inputText = fmt.Sprintf("%s\n\n[Transcrição do Áudio]: %s", msg.Caption, strings.TrimSpace(transcription))
+			} else {
+				inputText = strings.TrimSpace(transcription)
+			}
+		} else if documents.IsSupportedDocument(msg.Document.FileName) {
+			tmpPath, err := s.tg.DownloadFileToTemp(ctx, msg.Document.FileID, "atlas_doc_*")
+			if err != nil {
+				log.Printf("[Erro] Download de documento falhou: %v\n", err)
+				_ = s.tg.SendMessage(ctx, chatID, "⚠️ Erro ao receber documento.")
+				return
+			}
+			defer os.Remove(tmpPath)
+
+			extracted, err := documents.ExtractText(ctx, tmpPath, msg.Document.FileName, documents.DefaultMaxChars)
+			if err != nil {
+				log.Printf("[Erro] Extração de texto falhou: %v\n", err)
+				_ = s.tg.SendMessage(ctx, chatID, fmt.Sprintf("⚠️ Erro ao processar o arquivo '%s': %v", msg.Document.FileName, err))
+				return
+			}
+
+			if msg.Caption != "" {
+				inputText = fmt.Sprintf("Documento '%s':\n%s\n\nInstrução do usuário: %s", msg.Document.FileName, extracted, msg.Caption)
+			} else {
+				inputText = fmt.Sprintf("Analise e elabore uma síntese executiva deste documento '%s':\n\n%s", msg.Document.FileName, extracted)
+			}
+		} else {
+			_ = s.tg.SendMessage(ctx, chatID, "⚠️ Formato de arquivo não suportado (aceitos: PDF, TXT, CSV, JSON, Markdown, código e áudios).")
+			return
+		}
 	}
 
 	if inputText == "" {
@@ -956,6 +1035,11 @@ func (s *Server) handleCommand(ctx context.Context, chatID int64, cmdText string
 • 📊 */tokens* — Relatório de consumo de tokens e limites
 • 🗓️ */calendario* ou */mes* — Grade visual em emojis e link iCal
 • 🛰️ */sonar <cmd>* ou *$ <cmd>* — Terminal Linux local (Zero Tokens)
+• 🐍 */py <código>* — Interpretador Python local seguro
+• 🕷️ */crawl <url>* — Rastrear e consolidar páginas de um site
+• 🏛️ */swarm <tema>* — Conselho de 3 especialistas (Pesquisador, Analista, Crítico)
+• ☀️ */briefing* / 🌙 */review* — Briefing matinal e auditoria socrática do dia
+• 📄 *Envio de Arquivos* — Envie PDFs, CSVs, TXT, código ou áudios para leitura direta
 
 💬 *Comandos Naturais (Voz ou Texto):*
 👉 _"$ git status"_ ou _"/sonar ls -la"_
@@ -1113,6 +1197,123 @@ func (s *Server) handleCommand(ctx context.Context, chatID int64, cmdText string
 			cleanOut = cleanOut[:3450] + "\n... [saída truncada]"
 		}
 		_ = s.tg.SendMessage(ctx, chatID, fmt.Sprintf("%s```text\n%s\n```", header, cleanOut))
+
+	case "/py", "/python":
+		code := strings.TrimSpace(strings.TrimPrefix(cmdText, cmd))
+		if code == "" {
+			_ = s.tg.SendMessage(ctx, chatID, "🐍 *ATLAS — Interpretador Python*\n\nExecute código Python diretamente no ambiente local.\n\nUso:\n`/py print('Olá mundo')`\nou envie blocos de código com `/py`.")
+			return
+		}
+		code = strings.TrimPrefix(code, "```python")
+		code = strings.TrimPrefix(code, "```py")
+		code = strings.TrimPrefix(code, "```")
+		code = strings.TrimSuffix(code, "```")
+		code = strings.TrimSpace(code)
+
+		res, err := s.interpreter.RunPython(ctx, code)
+		if err != nil {
+			_ = s.tg.SendMessage(ctx, chatID, fmt.Sprintf("⚠️ Falha ao executar script: %v", err))
+			return
+		}
+		_ = s.tg.SendMessage(ctx, chatID, res.FormatTelegramHUD())
+
+	case "/crawl", "/rastrear":
+		targetURL := strings.TrimSpace(strings.TrimPrefix(cmdText, cmd))
+		if targetURL == "" {
+			_ = s.tg.SendMessage(ctx, chatID, "🕷️ *ATLAS — Web Crawler*\n\nRastreia múltiplas páginas internas de um site e consolida o conteúdo.\n\nUso: `/crawl https://exemplo.com`")
+			return
+		}
+		if !strings.HasPrefix(targetURL, "http://") && !strings.HasPrefix(targetURL, "https://") {
+			targetURL = "https://" + targetURL
+		}
+
+		_ = s.tg.SendMessage(ctx, chatID, fmt.Sprintf("🕷️ *Iniciando Rastreamento Web...*\nExplorando páginas internas de `%s` (limite: 5 páginas)...", targetURL))
+
+		go func(seed string) {
+			crawlCtx, cancel := context.WithTimeout(context.Background(), 35*time.Second)
+			defer cancel()
+
+			res, err := s.crawler.Crawl(crawlCtx, seed, crawler.DefaultOptions())
+			if err != nil || len(res.Pages) == 0 {
+				_ = s.tg.SendMessage(crawlCtx, chatID, fmt.Sprintf("⚠️ Falha ao rastrear site: %v", err))
+				return
+			}
+
+			summaryMsg := fmt.Sprintf("🕷️ *Rastreamento Concluído!* (`%s`)\n📄 *Páginas varridas:* %d\n⏱️ *Tempo:* %dms\n\n", res.Host, len(res.Pages), res.Duration.Milliseconds())
+			for i, p := range res.Pages {
+				summaryMsg += fmt.Sprintf("• *%d. %s*\n  `%s`\n", i+1, p.Title, p.URL)
+			}
+			summaryMsg += "\n_Envie `/pesquisa <termo>` ou faça perguntas sobre o conteúdo dessas páginas._"
+			_ = s.tg.SendMessage(crawlCtx, chatID, summaryMsg)
+		}(targetURL)
+
+	case "/swarm", "/deliberar", "/conselho":
+		topic := strings.TrimSpace(strings.TrimPrefix(cmdText, cmd))
+		if topic == "" {
+			_ = s.tg.SendMessage(ctx, chatID, "🏛️ *ATLAS — Conselho de Especialistas (Multi-Agentes Swarm)*\n\nDespacha três agentes simultâneos (Pesquisador, Analista e Crítico Socrático) para uma deliberação aprofundada.\n\nUso: `/swarm Devo lançar o produto agora?`")
+			return
+		}
+
+		_ = s.tg.SendMessage(ctx, chatID, fmt.Sprintf("🏛️ *Conselho de Inteligência Convocado!*\n\nAcionando *Pesquisador*, *Analista* e *Crítico Socrático* em paralelo sobre:\n👉 _%s_...", topic))
+
+		go func(t string) {
+			swarmCtx, cancel := context.WithTimeout(context.Background(), 75*time.Second)
+			defer cancel()
+
+			delib, err := s.swarm.Deliberate(swarmCtx, t)
+			if err != nil {
+				_ = s.tg.SendMessage(swarmCtx, chatID, fmt.Sprintf("⚠️ Falha na deliberação dos especialistas: %v", err))
+				return
+			}
+
+			if delib.TotalTokens > 0 {
+				_ = s.db.RecordTokenUsage(swarmCtx, "nvidia-swarm", "nemotron-council", 0, 0, delib.TotalTokens)
+			}
+
+			hudMsg := delib.FormatTelegramHUD()
+			_ = s.tg.SendMessage(swarmCtx, chatID, hudMsg)
+			_ = s.db.RecordHistory(swarmCtx, "assistant", hudMsg)
+		}(topic)
+
+	case "/briefing":
+		now := time.Now().In(s.cfg.Location)
+		todayStr := now.Format("2006-01-02")
+		events, _ := s.db.GetEventsForDay(ctx, todayStr)
+		goals, _ := s.db.GetActiveGoals(ctx, 5)
+
+		_ = s.tg.SendMessage(ctx, chatID, "☀️ *Compilando seu Briefing Executivo...*")
+
+		go func() {
+			bCtx, cancel := context.WithTimeout(context.Background(), 35*time.Second)
+			defer cancel()
+
+			aiBriefing, err := s.nluClient.GenerateBriefing(bCtx, todayStr, events, goals)
+			if err == nil && aiBriefing != "" {
+				_ = s.tg.SendMessage(bCtx, chatID, fmt.Sprintf("☀️ *ATLAS — Briefing Executivo*\n\n%s", aiBriefing))
+			} else {
+				_ = s.tg.SendMessage(bCtx, chatID, fmt.Sprintf("☀️ *ATLAS — Briefing Executivo*\n\n📅 Compromissos hoje: %d\n🎯 Metas ativas: %d\n\nQual sua meta principal para o dia?", len(events), len(goals)))
+			}
+		}()
+
+	case "/review":
+		now := time.Now().In(s.cfg.Location)
+		todayStr := now.Format("2006-01-02")
+		events, _ := s.db.GetEventsForDay(ctx, todayStr)
+		goals, _ := s.db.GetActiveGoals(ctx, 5)
+
+		_ = s.tg.SendMessage(ctx, chatID, "🌙 *Compilando sua Auditoria do Dia...*")
+
+		go func() {
+			rCtx, cancel := context.WithTimeout(context.Background(), 35*time.Second)
+			defer cancel()
+
+			aiReview, err := s.nluClient.GenerateReview(rCtx, todayStr, events, goals)
+			if err == nil && aiReview != "" {
+				_ = s.tg.SendMessage(rCtx, chatID, fmt.Sprintf("🌙 *ATLAS — Fechamento do Dia*\n\n%s", aiReview))
+			} else {
+				_ = s.tg.SendMessage(rCtx, chatID, fmt.Sprintf("🌙 *ATLAS — Fechamento do Dia*\n\nO dia está encerrando. Suas tarefas foram cumpridas ou houve procrastinação hoje?"))
+			}
+		}()
 
 	case "/rotina":
 		if len(parts) >= 3 && strings.ToLower(parts[2]) == "toggle" {
@@ -1428,14 +1629,46 @@ func matchFastPath(text string) (string, bool) {
 
 	// 1. Terminal Sonar / Bash Shortcuts
 	if strings.HasPrefix(clean, "sonar ") {
-		return "/sonar " + strings.TrimSpace(strings.TrimPrefix(clean, "sonar ")), true
+		return "/sonar " + strings.TrimSpace(text[len("sonar "):]), true
 	}
 	if strings.HasPrefix(clean, "$") {
-		return "/sonar " + strings.TrimSpace(strings.TrimPrefix(clean, "$")), true
+		return "/sonar " + strings.TrimSpace(strings.TrimPrefix(strings.TrimSpace(text), "$")), true
 	}
 	if clean == "git status" || clean == "git diff" || clean == "git branch" || clean == "git log" ||
 		clean == "pwd" || clean == "ls" || clean == "ls -la" || clean == "df -h" || clean == "free -m" || clean == "uptime" {
 		return "/sonar " + clean, true
+	}
+
+	// 1.1 Ferramentas Executivas Globais (Python Sandbox, Web Crawler & Swarm)
+	if strings.HasPrefix(clean, "py ") {
+		return "/py " + strings.TrimSpace(text[len("py "):]), true
+	}
+	if strings.HasPrefix(clean, "python ") {
+		return "/py " + strings.TrimSpace(text[len("python "):]), true
+	}
+	if strings.HasPrefix(clean, "crawl ") {
+		return "/crawl " + strings.TrimSpace(text[len("crawl "):]), true
+	}
+	if strings.HasPrefix(clean, "crawler ") {
+		return "/crawl " + strings.TrimSpace(text[len("crawler "):]), true
+	}
+	if strings.HasPrefix(clean, "rastrear ") {
+		return "/crawl " + strings.TrimSpace(text[len("rastrear "):]), true
+	}
+	if strings.HasPrefix(clean, "swarm ") {
+		return "/swarm " + strings.TrimSpace(text[len("swarm "):]), true
+	}
+	if strings.HasPrefix(clean, "deliberar ") {
+		return "/swarm " + strings.TrimSpace(text[len("deliberar "):]), true
+	}
+	if strings.HasPrefix(clean, "conselho ") {
+		return "/swarm " + strings.TrimSpace(text[len("conselho "):]), true
+	}
+	if clean == "briefing" || clean == "meu briefing" || clean == "briefing matinal" {
+		return "/briefing", true
+	}
+	if clean == "review" || clean == "fechamento" || clean == "fechamento do dia" || clean == "auditoria do dia" {
+		return "/review", true
 	}
 
 	tokens := synonyms.TokenizeAndCanonicalize(clean)

@@ -25,16 +25,18 @@ type Update struct {
 }
 
 type Message struct {
-	MessageID         int    `json:"message_id"`
-	From              *User  `json:"from"`
-	Chat              Chat   `json:"chat"`
-	Date              int64  `json:"date"`
-	Text              string `json:"text"`
-	Voice             *Voice `json:"voice"`
-	Caption           string `json:"caption"`
-	ForwardFrom       *User  `json:"forward_from"`
-	ForwardSenderName string `json:"forward_sender_name"`
-	ForwardDate       int64  `json:"forward_date"`
+	MessageID         int       `json:"message_id"`
+	From              *User     `json:"from"`
+	Chat              Chat      `json:"chat"`
+	Date              int64     `json:"date"`
+	Text              string    `json:"text"`
+	Voice             *Voice    `json:"voice"`
+	Audio             *Audio    `json:"audio"`
+	Document          *Document `json:"document"`
+	Caption           string    `json:"caption"`
+	ForwardFrom       *User     `json:"forward_from"`
+	ForwardSenderName string    `json:"forward_sender_name"`
+	ForwardDate       int64     `json:"forward_date"`
 }
 
 type InlineKeyboardButton struct {
@@ -67,6 +69,25 @@ type Voice struct {
 	FileID       string `json:"file_id"`
 	FileUniqueID string `json:"file_unique_id"`
 	Duration     int    `json:"duration"`
+	MimeType     string `json:"mime_type"`
+	FileSize     int64  `json:"file_size"`
+}
+
+type Audio struct {
+	FileID       string `json:"file_id"`
+	FileUniqueID string `json:"file_unique_id"`
+	Duration     int    `json:"duration"`
+	Performer    string `json:"performer"`
+	Title        string `json:"title"`
+	FileName     string `json:"file_name"`
+	MimeType     string `json:"mime_type"`
+	FileSize     int64  `json:"file_size"`
+}
+
+type Document struct {
+	FileID       string `json:"file_id"`
+	FileUniqueID string `json:"file_unique_id"`
+	FileName     string `json:"file_name"`
 	MimeType     string `json:"mime_type"`
 	FileSize     int64  `json:"file_size"`
 }
@@ -233,8 +254,12 @@ func (c *Client) SendMessageWithWebApp(ctx context.Context, chatID int64, text, 
 	return nil
 }
 
-// DownloadVoiceFile downloads an audio file by file_id to a secure local temp file.
-func (c *Client) DownloadVoiceFile(ctx context.Context, fileID string) (string, error) {
+// DownloadFileToTemp downloads any Telegram file by file_id to a secure local temp file matching the pattern.
+func (c *Client) DownloadFileToTemp(ctx context.Context, fileID, pattern string) (string, error) {
+	if pattern == "" {
+		pattern = "atlas_download_*"
+	}
+
 	// 1. Get file path
 	infoURL := fmt.Sprintf("https://api.telegram.org/bot%s/getFile?file_id=%s", c.botToken, fileID)
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, infoURL, nil)
@@ -270,8 +295,15 @@ func (c *Client) DownloadVoiceFile(ctx context.Context, fileID string) (string, 
 	}
 	defer respDL.Body.Close()
 
-	// Write to secure temporary file (0600)
-	tmpFile, err := os.CreateTemp("", "atlas_voice_*.ogg")
+	// Preserve extension if pattern doesn't specify one
+	ext := filepath.Ext(fileResp.Result.FilePath)
+	if !strings.Contains(pattern, "*") {
+		pattern += "_*" + ext
+	} else if !strings.HasSuffix(pattern, ext) && ext != "" {
+		pattern += ext
+	}
+
+	tmpFile, err := os.CreateTemp("", pattern)
 	if err != nil {
 		return "", fmt.Errorf("create temp file: %w", err)
 	}
@@ -279,10 +311,15 @@ func (c *Client) DownloadVoiceFile(ctx context.Context, fileID string) (string, 
 
 	if _, err := io.Copy(tmpFile, respDL.Body); err != nil {
 		os.Remove(tmpFile.Name())
-		return "", fmt.Errorf("save voice temp file: %w", err)
+		return "", fmt.Errorf("save temp file: %w", err)
 	}
 
 	return tmpFile.Name(), nil
+}
+
+// DownloadVoiceFile downloads an audio file by file_id to a secure local temp file.
+func (c *Client) DownloadVoiceFile(ctx context.Context, fileID string) (string, error) {
+	return c.DownloadFileToTemp(ctx, fileID, "atlas_voice_*.ogg")
 }
 
 // SendDocument uploads a file (e.g. database backup) to Telegram.

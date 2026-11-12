@@ -317,6 +317,13 @@ func TestMatchFastPathPriorities(t *testing.T) {
 		{"git status", "/sonar git status", true},
 		{"$ ls -la", "/sonar ls -la", true},
 		{"sonar df -h", "/sonar df -h", true},
+		{"py print(42)", "/py print(42)", true},
+		{"python import sys; print(sys.version)", "/py import sys; print(sys.version)", true},
+		{"crawl https://example.com", "/crawl https://example.com", true},
+		{"swarm Qual a melhor arquitetura?", "/swarm Qual a melhor arquitetura?", true},
+		{"conselho Devo aceitar a proposta?", "/swarm Devo aceitar a proposta?", true},
+		{"briefing matinal", "/briefing", true},
+		{"review", "/review", true},
 	}
 
 	for _, tc := range testCases {
