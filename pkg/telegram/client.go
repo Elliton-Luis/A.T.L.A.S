@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 )
 
@@ -87,8 +88,21 @@ func NewClient(botToken string) *Client {
 	}
 }
 
-// SendMessage sends a text message to the specified chat.
+// SendMessage sends a text message to the specified chat, splitting into chunks if text exceeds Telegram's limit.
 func (c *Client) SendMessage(ctx context.Context, chatID int64, text string) error {
+	chunks := splitMessage(text, 4000)
+	for _, chunk := range chunks {
+		if strings.TrimSpace(chunk) == "" {
+			continue
+		}
+		if err := c.sendSingleMessage(ctx, chatID, chunk); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (c *Client) sendSingleMessage(ctx context.Context, chatID int64, text string) error {
 	url := fmt.Sprintf("https://api.telegram.org/bot%s/sendMessage", c.botToken)
 
 	payload := map[string]interface{}{
@@ -124,6 +138,35 @@ func (c *Client) SendMessage(ctx context.Context, chatID int64, text string) err
 	}
 
 	return nil
+}
+
+func splitMessage(text string, maxLen int) []string {
+	if len(text) <= maxLen {
+		return []string{text}
+	}
+
+	var chunks []string
+	remaining := text
+
+	for len(remaining) > 0 {
+		if len(remaining) <= maxLen {
+			chunks = append(chunks, remaining)
+			break
+		}
+
+		cut := maxLen
+		sub := remaining[:maxLen]
+		if idx := strings.LastIndex(sub, "\n"); idx >= maxLen-500 && idx > 0 {
+			cut = idx + 1
+		} else if idx := strings.LastIndexAny(sub, ".;"); idx >= maxLen-200 && idx > 0 {
+			cut = idx + 1
+		}
+
+		chunks = append(chunks, strings.TrimRight(remaining[:cut], "\n"))
+		remaining = strings.TrimLeft(remaining[cut:], "\n")
+	}
+
+	return chunks
 }
 
 func (c *Client) sendPlainMessage(ctx context.Context, chatID int64, text string) error {

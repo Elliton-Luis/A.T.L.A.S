@@ -184,4 +184,43 @@ func TestDatabaseMigrationAndOperations(t *testing.T) {
 	if !foundFeb {
 		t.Fatalf("expected 'Fechamento Contábil' to trigger on Feb 28 due to February month end clamp")
 	}
+
+	// 9. Test Pending Confirmation and Event Helpers
+	evDentistaID, err := db.InsertEvento(ctx, "Consulta Dentista", "2026-11-15 14:00:00", "2026-11-15 13:00:00", "2026-11-15 13:30:00")
+	if err != nil {
+		t.Fatalf("failed to insert test event: %v", err)
+	}
+
+	evByID, err := db.GetEventoByID(ctx, evDentistaID)
+	if err != nil || evByID == nil || evByID.Descricao != "Consulta Dentista" {
+		t.Fatalf("GetEventoByID failed: %v", err)
+	}
+
+	latestEv, err := db.GetLatestPendingEvento(ctx)
+	if err != nil || latestEv == nil || latestEv.ID != evDentistaID {
+		t.Fatalf("GetLatestPendingEvento failed: %v", err)
+	}
+
+	simEv, err := db.FindSimilarActiveEvento(ctx, "Dentista")
+	if err != nil || simEv == nil || simEv.ID != evDentistaID {
+		t.Fatalf("FindSimilarActiveEvento failed: %v", err)
+	}
+
+	// Test pending confirmation persistence
+	if err := db.SavePendingConfirmation(ctx, 12345, "substituir_evento", evDentistaID, `{"tipo":"evento","descricao":"Dentista Novo"}`); err != nil {
+		t.Fatalf("SavePendingConfirmation failed: %v", err)
+	}
+
+	pending, err := db.GetPendingConfirmation(ctx, 12345)
+	if err != nil || pending == nil || pending.EventoID != evDentistaID {
+		t.Fatalf("GetPendingConfirmation failed: %v", err)
+	}
+
+	if err := db.DeletePendingConfirmation(ctx, 12345); err != nil {
+		t.Fatalf("DeletePendingConfirmation failed: %v", err)
+	}
+
+	if _, err := db.GetPendingConfirmation(ctx, 12345); err == nil {
+		t.Fatalf("expected pending confirmation to be deleted")
+	}
 }

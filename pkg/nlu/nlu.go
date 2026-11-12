@@ -16,13 +16,14 @@ import (
 )
 
 type Client struct {
-	groqPool       *pool.KeyPool
-	groqModel      string
-	nvidiaPool     *pool.KeyPool
-	nvidiaModel    string
-	maxTokensQuick int
-	maxTokensHeavy int
-	httpClient     *http.Client
+	groqPool          *pool.KeyPool
+	groqModel         string
+	nvidiaPool        *pool.KeyPool
+	nvidiaModel       string
+	maxTokensQuick    int
+	maxTokensHeavy    int
+	maxTokensResearch int
+	httpClient        *http.Client
 }
 
 type IntentResult struct {
@@ -51,6 +52,7 @@ type IntentResult struct {
 	Nome                      string `json:"nome,omitempty"`
 	Mensagem                  string `json:"mensagem,omitempty"`
 	URL                       string `json:"url,omitempty"`
+	SubstituirEventoID        int64  `json:"substituir_evento_id,omitempty"`
 
 	// Token usage telemetry
 	PromptTokens     int `json:"-"`
@@ -113,7 +115,7 @@ type APIResponse struct {
 	TotalTokens  int
 }
 
-func NewClient(groqKeys, nvidiaKeys, nvidiaModel string, maxTokensQuick, maxTokensHeavy int) *Client {
+func NewClient(groqKeys, nvidiaKeys, nvidiaModel string, maxTokensQuick, maxTokensHeavy, maxTokensResearch int) *Client {
 	if nvidiaModel == "" {
 		nvidiaModel = "meta/llama-3.2-90b-vision-instruct"
 	}
@@ -121,15 +123,19 @@ func NewClient(groqKeys, nvidiaKeys, nvidiaModel string, maxTokensQuick, maxToke
 		maxTokensQuick = 450
 	}
 	if maxTokensHeavy <= 0 {
-		maxTokensHeavy = 800
+		maxTokensHeavy = 2048
+	}
+	if maxTokensResearch <= 0 {
+		maxTokensResearch = 4096
 	}
 	return &Client{
-		groqPool:       pool.New(groqKeys),
-		groqModel:      "qwen/qwen3.8-27b",
-		nvidiaPool:     pool.New(nvidiaKeys),
-		nvidiaModel:    nvidiaModel,
-		maxTokensQuick: maxTokensQuick,
-		maxTokensHeavy: maxTokensHeavy,
+		groqPool:          pool.New(groqKeys),
+		groqModel:         "qwen/qwen3.8-27b",
+		nvidiaPool:        pool.New(nvidiaKeys),
+		nvidiaModel:       nvidiaModel,
+		maxTokensQuick:    maxTokensQuick,
+		maxTokensHeavy:    maxTokensHeavy,
+		maxTokensResearch: maxTokensResearch,
 		httpClient: &http.Client{
 			Timeout: 20 * time.Second,
 		},
@@ -180,8 +186,8 @@ func SanitizeHumanResponse(s string) string {
 	return strings.TrimSpace(s)
 }
 
-// ParseIntent sends the user's message along with sliding history and long-term memory to NLU.
-func (c *Client) ParseIntent(ctx context.Context, text, currentDatetime string, history []database.ChatMessage, userMemories []database.MemoriaUsuario, latestIdeia *database.Ideia) (*IntentResult, error) {
+// ParseIntent sends the user's message along with sliding history, active events and long-term memory to NLU.
+func (c *Client) ParseIntent(ctx context.Context, text, currentDatetime string, history []database.ChatMessage, userMemories []database.MemoriaUsuario, latestIdeia *database.Ideia, activeEvents []database.Evento) (*IntentResult, error) {
 	if c.groqPool.IsEmpty() && c.nvidiaPool.IsEmpty() {
 		return nil, fmt.Errorf("nenhuma chave de IA (Groq ou NVIDIA) configurada")
 	}
@@ -199,8 +205,21 @@ func (c *Client) ParseIntent(ctx context.Context, text, currentDatetime string, 
 		ideiaSb.WriteString(fmt.Sprintf("\n\nÚLTIMA IDEIA EM DESENVOLVIMENTO (ID %d - '%s'):\nSuma atual:\n%s\nSe o usuário estiver trazendo mais argumentos, detalhes ou complementos a essa ideia, use 'tipo': 'adicionar_ideia'.\n", latestIdeia.ID, latestIdeia.Titulo, latestIdeia.SumaExecutiva))
 	}
 
+	var agendaSb strings.Builder
+	if len(activeEvents) > 0 {
+		agendaSb.WriteString("\n\nCOMPROMISSOS ATIVOS NA AGENDA DO USUÁRIO:\n")
+		for _, ev := range activeEvents {
+			timeStr := ev.HorarioOficial
+			if ev.HorarioTime != "" {
+				timeStr = ev.HorarioTime
+			}
+			agendaSb.WriteString(fmt.Sprintf("- ID %d: \"%s\" às %s (frequência: %s)\n", ev.ID, ev.Descricao, timeStr, ev.Frequencia))
+		}
+		agendaSb.WriteString("Se o usuário estiver corrigindo, ajustando, refazendo ou alterando o horário de um compromisso acima (ou disser que errou), defina 'substituir_evento_id' com o ID correspondente.\n")
+	}
+
 	systemPrompt := fmt.Sprintf(`Você é o ATLAS: assistente pessoal executivo de alto nível, inspirado no JARVIS.
-Horário atual de referência: %s.%s%s
+Horário atual de referência: %s.%s%s%s
 
 SEUS ALGORITMOS E CAPACIDADES INTERNAS (REAIS):
 1. Algoritmo Anti-Atraso (Margem Determinística de +15%%):
@@ -272,7 +291,8 @@ Classifique a intenção estritamente em uma das opções abaixo e responda EXCL
   "dia_semana": 0 a 6 (0=Domingo, 1=Segunda, 2=Terça, 3=Quarta, 4=Quinta, 5=Sexta, 6=Sábado; use apenas se frequencia for "semanal"),
   "dia_mes": 1 a 31 (use apenas se frequencia for "mensal"),
   "estimativa_deslocamento_min": 25,
-  "estimativa_preparo_min": 35
+  "estimativa_preparo_min": 35,
+  "substituir_evento_id": 0
 }
 
 6. Para metas e objetivos:
@@ -302,13 +322,13 @@ Classifique a intenção estritamente em uma das opções abaixo e responda EXCL
   "progresso": 80
 }
 
-9. Para conversa, reflexão ou debate geral:
+9. Para conversa, reflexão, debate ou pesquisa aprofundada:
 {
-  "tipo": "conversa",
-  "complexidade": "simples" ou "pesada",
-  "resposta": "Sua resposta equilibrada, polida e perspicaz"
+  "tipo": "conversa" ou "pesquisa",
+  "complexidade": "simples" ou "pesada" ou "pesquisa" (use "pesquisa" quando for solicitação de estudo aprofundado, pesquisa extensa, artigos, dossiê ou resumo detalhado),
+  "resposta": "Sua resposta equilibrada, polida e perspicaz (apenas se complexidade for simples)"
 }
-`, currentDatetime, memSb.String(), ideiaSb.String())
+`, currentDatetime, memSb.String(), ideiaSb.String(), agendaSb.String())
 
 	messages := []ChatMessagePayload{
 		{Role: "system", Content: systemPrompt},
@@ -463,6 +483,48 @@ Responda com extrema sofisticação, profundidade analítica, clareza cirúrgica
 	}
 
 	return nil, fmt.Errorf("nenhum provedor de IA disponível para análise profunda")
+}
+
+// ResearchAnalyze executes unconstrained deep research with expanded output tokens.
+func (c *Client) ResearchAnalyze(ctx context.Context, text string, history []database.ChatMessage) (*APIResponse, error) {
+	systemPrompt := `Você é o ATLAS no MODO PESQUISA & SÍNTESE APROFUNDADA (JARVIS Research Core).
+Você tem autorização para produzir respostas completas, extensas, densas e minuciosas, sem cortes ou truncamentos prematuros.
+Diretrizes do Perfil de Pesquisa:
+1. Traga conceitos fundamentais, contexto histórico/técnico e o estado da arte.
+2. Apresente múltiplos pontos de vista, referências, artigos e escolas de pensamento relevantes.
+3. Estruture em tópicos claros, com introdução, desenvolvimento analítico, exemplos práticos e conclusões executivas.
+4. Jamais economize explicações essenciais: priorize riqueza conceitual, precisão e clareza analítica.`
+
+	messages := []ChatMessagePayload{
+		{Role: "system", Content: systemPrompt},
+	}
+	for _, h := range history {
+		messages = append(messages, ChatMessagePayload{Role: h.Role, Content: h.Content})
+	}
+	messages = append(messages, ChatMessagePayload{Role: "user", Content: text})
+
+	payload := ChatCompletionRequest{
+		Model:       c.nvidiaModel,
+		Messages:    messages,
+		Temperature: 0.3,
+		MaxTokens:   c.maxTokensResearch,
+	}
+
+	// 1. Tenta NVIDIA NIM
+	if !c.nvidiaPool.IsEmpty() {
+		res, err := c.executePoolAPI(ctx, "https://integrate.api.nvidia.com/v1/chat/completions", c.nvidiaPool, payload)
+		if err == nil && res != nil {
+			return res, nil
+		}
+	}
+
+	// 2. Fallback para Groq
+	if !c.groqPool.IsEmpty() {
+		payload.Model = c.groqModel
+		return c.executePoolAPI(ctx, "https://api.groq.com/openai/v1/chat/completions", c.groqPool, payload)
+	}
+
+	return nil, fmt.Errorf("nenhum provedor de IA disponível para pesquisa profunda")
 }
 
 func (c *Client) doRequest(ctx context.Context, payload ChatCompletionRequest) (*APIResponse, error) {

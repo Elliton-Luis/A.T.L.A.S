@@ -24,6 +24,7 @@ type Config struct {
 	PublicURL           string
 	MaxTokensQuick      int
 	MaxTokensHeavy      int
+	MaxTokensResearch   int
 	HistoryLimit        int
 	TursoDatabaseURL    string
 	TursoAuthToken      string
@@ -54,9 +55,13 @@ func Load(envPath string) (*Config, error) {
 	if maxQuick <= 0 {
 		maxQuick = 450
 	}
-	maxHeavy, _ := strconv.Atoi(getEnv("MAX_TOKENS_HEAVY", "800"))
+	maxHeavy, _ := strconv.Atoi(getEnv("MAX_TOKENS_HEAVY", "2048"))
 	if maxHeavy <= 0 {
-		maxHeavy = 800
+		maxHeavy = 2048
+	}
+	maxResearch, _ := strconv.Atoi(getEnv("MAX_TOKENS_RESEARCH", "4096"))
+	if maxResearch <= 0 {
+		maxResearch = 4096
 	}
 	histLimit, _ := strconv.Atoi(getEnv("CHAT_HISTORY_LIMIT", "4"))
 	if histLimit <= 0 {
@@ -79,6 +84,7 @@ func Load(envPath string) (*Config, error) {
 		PublicURL:           strings.TrimSuffix(getEnv("PUBLIC_URL", "http://localhost:8080"), "/"),
 		MaxTokensQuick:      maxQuick,
 		MaxTokensHeavy:      maxHeavy,
+		MaxTokensResearch:   maxResearch,
 		HistoryLimit:        histLimit,
 		TursoDatabaseURL:    getEnv("TURSO_DATABASE_URL", ""),
 		TursoAuthToken:      getEnv("TURSO_AUTH_TOKEN", ""),

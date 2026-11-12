@@ -237,6 +237,14 @@ func (db *DB) migrate(ctx context.Context, isRemote bool) error {
 		criado_em DATETIME DEFAULT CURRENT_TIMESTAMP
 	);
 
+	CREATE TABLE IF NOT EXISTS confirmacoes_pendentes (
+		chat_id INTEGER PRIMARY KEY,
+		tipo TEXT NOT NULL,
+		evento_id INTEGER NOT NULL,
+		novo_evento_json TEXT NOT NULL,
+		criado_em DATETIME DEFAULT CURRENT_TIMESTAMP
+	);
+
 	CREATE INDEX IF NOT EXISTS idx_eventos_notificacao ON eventos(
 		notificado_buffer_1,
 		notificado_buffer_2,
@@ -940,6 +948,21 @@ func (db *DB) GetUpcomingEvents(ctx context.Context, limit int) ([]Evento, error
 	return list, nil
 }
 
+// GetMonthEventCounts calculates event count for every day of a given month.
+func (db *DB) GetMonthEventCounts(ctx context.Context, year int, month time.Month) (map[int]int, error) {
+	counts := make(map[int]int)
+	lastDay := time.Date(year, month+1, 0, 0, 0, 0, 0, time.UTC).Day()
+
+	for d := 1; d <= lastDay; d++ {
+		dateStr := fmt.Sprintf("%04d-%02d-%02d", year, int(month), d)
+		evts, err := db.GetEventsForDay(ctx, dateStr)
+		if err == nil && len(evts) > 0 {
+			counts[d] = len(evts)
+		}
+	}
+	return counts, nil
+}
+
 // MarkEventStatus updates an event's status (e.g. 'concluido', 'esquecido').
 func (db *DB) MarkEventStatus(ctx context.Context, id int64, status string) error {
 	_, err := db.ExecContext(ctx, "UPDATE eventos SET status = ? WHERE id = ?", status, id)
@@ -968,4 +991,111 @@ func CleanWhitespace(s string) string {
 
 func FormatDateTime(t time.Time) string {
 	return t.Format("2006-01-02 15:04:05")
+}
+
+// ConfirmacaoPendente guarda uma confirmação pendente de substituição ou ação sensível.
+type ConfirmacaoPendente struct {
+	ChatID         int64  `json:"chat_id"`
+	Tipo           string `json:"tipo"`
+	EventoID       int64  `json:"evento_id"`
+	NovoEventoJSON string `json:"novo_evento_json"`
+	CriadoEm       string `json:"criado_em"`
+}
+
+// SavePendingConfirmation grava ou atualiza uma confirmação pendente para o chat.
+func (db *DB) SavePendingConfirmation(ctx context.Context, chatID int64, tipo string, eventoID int64, novoEventoJSON string) error {
+	_, err := db.ExecContext(ctx, `
+		INSERT INTO confirmacoes_pendentes (chat_id, tipo, evento_id, novo_evento_json, criado_em)
+		VALUES (?, ?, ?, ?, CURRENT_TIMESTAMP)
+		ON CONFLICT(chat_id) DO UPDATE SET
+			tipo = excluded.tipo,
+			evento_id = excluded.evento_id,
+			novo_evento_json = excluded.novo_evento_json,
+			criado_em = CURRENT_TIMESTAMP
+	`, chatID, tipo, eventoID, novoEventoJSON)
+	return err
+}
+
+// GetPendingConfirmation recupera a confirmação pendente do chat.
+func (db *DB) GetPendingConfirmation(ctx context.Context, chatID int64) (*ConfirmacaoPendente, error) {
+	var c ConfirmacaoPendente
+	err := db.QueryRowContext(ctx, `
+		SELECT chat_id, tipo, evento_id, novo_evento_json, criado_em
+		FROM confirmacoes_pendentes
+		WHERE chat_id = ?
+	`, chatID).Scan(&c.ChatID, &c.Tipo, &c.EventoID, &c.NovoEventoJSON, &c.CriadoEm)
+	if err != nil {
+		return nil, err
+	}
+	return &c, nil
+}
+
+// DeletePendingConfirmation remove a confirmação pendente do chat.
+func (db *DB) DeletePendingConfirmation(ctx context.Context, chatID int64) error {
+	_, err := db.ExecContext(ctx, "DELETE FROM confirmacoes_pendentes WHERE chat_id = ?", chatID)
+	return err
+}
+
+// GetEventoByID recupera um evento pelo ID.
+func (db *DB) GetEventoByID(ctx context.Context, id int64) (*Evento, error) {
+	row := db.QueryRowContext(ctx, fmt.Sprintf(`
+		SELECT %s
+		FROM eventos
+		WHERE id = ?
+	`, selectEventoCols), id)
+
+	var e Evento
+	if err := row.Scan(
+		&e.ID, &e.Descricao, &e.HorarioOficial, &e.HorarioBuffer1, &e.HorarioBuffer2,
+		&e.NotificadoBuffer1, &e.NotificadoBuffer2, &e.NotificadoConclusao, &e.Status, &e.CriadoEm,
+		&e.Frequencia, &e.DiaSemana, &e.DiaMes, &e.HorarioTime,
+		&e.DeslocamentoMin, &e.PreparoMin,
+		&e.UltimaNotificacaoB1, &e.UltimaNotificacaoB2, &e.UltimaConclusaoData,
+	); err != nil {
+		return nil, err
+	}
+	return &e, nil
+}
+
+// GetLatestPendingEvento recupera o evento pendente mais recentemente criado.
+func (db *DB) GetLatestPendingEvento(ctx context.Context) (*Evento, error) {
+	row := db.QueryRowContext(ctx, fmt.Sprintf(`
+		SELECT %s
+		FROM eventos
+		WHERE status = 'pendente'
+		ORDER BY id DESC
+		LIMIT 1
+	`, selectEventoCols))
+
+	var e Evento
+	if err := row.Scan(
+		&e.ID, &e.Descricao, &e.HorarioOficial, &e.HorarioBuffer1, &e.HorarioBuffer2,
+		&e.NotificadoBuffer1, &e.NotificadoBuffer2, &e.NotificadoConclusao, &e.Status, &e.CriadoEm,
+		&e.Frequencia, &e.DiaSemana, &e.DiaMes, &e.HorarioTime,
+		&e.DeslocamentoMin, &e.PreparoMin,
+		&e.UltimaNotificacaoB1, &e.UltimaNotificacaoB2, &e.UltimaConclusaoData,
+	); err != nil {
+		return nil, err
+	}
+	return &e, nil
+}
+
+// FindSimilarActiveEvento busca um evento pendente cuja descrição seja similar ao termo.
+func (db *DB) FindSimilarActiveEvento(ctx context.Context, desc string) (*Evento, error) {
+	desc = strings.TrimSpace(desc)
+	if desc == "" {
+		return nil, nil
+	}
+	events, err := db.GetUpcomingEvents(ctx, 50)
+	if err != nil {
+		return nil, err
+	}
+	lowerDesc := strings.ToLower(desc)
+	for _, ev := range events {
+		lowerEv := strings.ToLower(ev.Descricao)
+		if lowerEv == lowerDesc || strings.Contains(lowerEv, lowerDesc) || strings.Contains(lowerDesc, lowerEv) {
+			return &ev, nil
+		}
+	}
+	return nil, nil
 }
