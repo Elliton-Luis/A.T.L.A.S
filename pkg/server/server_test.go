@@ -370,6 +370,9 @@ func TestMatchFastPathPriorities(t *testing.T) {
 		{"conselho Devo aceitar a proposta?", "/swarm Devo aceitar a proposta?", true},
 		{"briefing matinal", "/briefing", true},
 		{"review", "/review", true},
+		{"emails", "/emails", true},
+		{"ver emails", "/emails", true},
+		{"o que tem no meu email", "/emails", true},
 	}
 
 	for _, tc := range testCases {

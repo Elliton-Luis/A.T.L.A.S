@@ -33,6 +33,10 @@ type Config struct {
 	SonarBridgeToken    string
 	SonarCLIPath        string
 	ProjectsDir         string
+	IMAPHost            string
+	IMAPPort            string
+	IMAPUser            string
+	IMAPPass            string
 }
 
 // Load reads .env (if present) and populates the Config from environment variables.
@@ -97,6 +101,10 @@ func Load(envPath string) (*Config, error) {
 		SonarBridgeToken:    getEnv("SONAR_BRIDGE_TOKEN", "Li3cht3nst3in2"),
 		SonarCLIPath:        getEnv("SONAR_CLI_PATH", "/home/chocotonilitz/Programacao/projetos/sonar/sonar_bridge.php"),
 		ProjectsDir:         getEnv("PROJECTS_BASE_DIR", "/home/chocotonilitz/Programacao/projetos"),
+		IMAPHost:            getEnv("IMAP_HOST", ""),
+		IMAPPort:            getEnv("IMAP_PORT", "993"),
+		IMAPUser:            getEnv("IMAP_USER", ""),
+		IMAPPass:            getEnv("IMAP_PASS", ""),
 	}
 
 	return cfg, nil

@@ -18,6 +18,7 @@ import (
 	"atlas/pkg/crawler"
 	"atlas/pkg/database"
 	"atlas/pkg/documents"
+	"atlas/pkg/email"
 	"atlas/pkg/hud"
 	"atlas/pkg/interpreter"
 	"atlas/pkg/nlu"
@@ -42,6 +43,7 @@ type Server struct {
 	interpreter *interpreter.Runner
 	crawler     *crawler.Crawler
 	swarm       *swarm.Orchestrator
+	emailReader *email.Reader
 	mux         *http.ServeMux
 }
 
@@ -65,6 +67,12 @@ func New(cfg *config.Config) (*Server, error) {
 	interpreterRunner := interpreter.NewRunner(sonarClient)
 	webCrawler := crawler.New()
 	swarmOrch := swarm.NewOrchestrator(nluClient)
+	emailReader := email.NewReader(email.Config{
+		Host:     cfg.IMAPHost,
+		Port:     cfg.IMAPPort,
+		User:     cfg.IMAPUser,
+		Password: cfg.IMAPPass,
+	})
 
 	s := &Server{
 		cfg:         cfg,
@@ -78,6 +86,7 @@ func New(cfg *config.Config) (*Server, error) {
 		interpreter: interpreterRunner,
 		crawler:     webCrawler,
 		swarm:       swarmOrch,
+		emailReader: emailReader,
 		mux:         http.NewServeMux(),
 	}
 
@@ -1119,6 +1128,7 @@ func (s *Server) handleCommand(ctx context.Context, chatID int64, cmdText string
 • 🕷️ */crawl <url>* — Rastrear e consolidar páginas de um site
 • 🏛️ */swarm <tema>* — Conselho de 3 especialistas (Pesquisador, Analista, Crítico)
 • ☀️ */briefing* / 🌙 */review* — Briefing matinal e auditoria socrática do dia
+• 📬 */emails* — Ler e curar e-mails importantes (somente leitura)
 • 📄 *Envio de Arquivos* — Envie PDFs, CSVs, TXT, código ou áudios para leitura direta
 
 💬 *Comandos Naturais (Voz ou Texto):*
@@ -1404,6 +1414,35 @@ func (s *Server) handleCommand(ctx context.Context, chatID int64, cmdText string
 			} else {
 				_ = s.tg.SendMessage(rCtx, chatID, fmt.Sprintf("🌙 *ATLAS — Fechamento do Dia*\n\nO dia está encerrando. Suas tarefas foram cumpridas ou houve procrastinação hoje?"))
 			}
+		}()
+
+	case "/email", "/emails":
+		if !s.emailReader.IsConfigured() {
+			msg := "📬 *Configuração de E-mail (Somente Leitura)*\n\nPara o ATLAS monitorar seus e-mails e destacar assuntos importantes, adicione no seu arquivo `.env`:\n\n```env\nIMAP_HOST=imap.gmail.com\nIMAP_PORT=993\nIMAP_USER=seu_email@gmail.com\nIMAP_PASS=sua_senha_de_app\n```\n\n*(Dica Gmail: gere uma Senha de App em: Gerenciar Conta Google ➔ Segurança ➔ Senhas de App)*"
+			_ = s.tg.SendMessage(ctx, chatID, msg)
+			return
+		}
+
+		_ = s.tg.SendMessage(ctx, chatID, "📬 *Acessando sua caixa de entrada (modo seguro somente-leitura)...*")
+
+		go func() {
+			mailCtx, cancel := context.WithTimeout(context.Background(), 35*time.Second)
+			defer cancel()
+
+			unread, err := s.emailReader.FetchRecentUnread(mailCtx, 7)
+			if err != nil {
+				log.Printf("[Erro Email] %v\n", err)
+				_ = s.tg.SendMessage(mailCtx, chatID, fmt.Sprintf("⚠️ Falha ao ler e-mails: %v", err))
+				return
+			}
+
+			curated, err := email.CurateEmails(mailCtx, s.nluClient, unread)
+			if err != nil {
+				_ = s.tg.SendMessage(mailCtx, chatID, "⚠️ Falha ao analisar e-mails.")
+				return
+			}
+
+			_ = s.tg.SendMessage(mailCtx, chatID, curated)
 		}()
 
 	case "/rotina":
@@ -1760,6 +1799,13 @@ func matchFastPath(text string) (string, bool) {
 	}
 	if clean == "review" || clean == "fechamento" || clean == "fechamento do dia" || clean == "auditoria do dia" {
 		return "/review", true
+	}
+	if clean == "email" || clean == "emails" || clean == "meu email" || clean == "meus emails" ||
+		strings.Contains(clean, "ler email") || strings.Contains(clean, "ler emails") ||
+		strings.Contains(clean, "ver emails") || strings.Contains(clean, "ver email") ||
+		strings.Contains(clean, "checar email") || strings.Contains(clean, "olhar email") ||
+		strings.Contains(clean, "tem algum email") || strings.Contains(clean, "o que tem no meu email") {
+		return "/emails", true
 	}
 
 	tokens := synonyms.TokenizeAndCanonicalize(clean)
