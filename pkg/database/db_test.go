@@ -110,4 +110,78 @@ func TestDatabaseMigrationAndOperations(t *testing.T) {
 	if err != nil || stats.TotalGroq != 70 {
 		t.Errorf("expected 70 groq tokens, got %v", stats)
 	}
+
+	// 8. Test Recurring Events (Daily, Weekly, Monthly with end-of-month validation)
+	// Daily event
+	_, err = db.InsertEventoCompleto(ctx, "Academia Diária", "", "", "", "diario", nil, nil, "07:00", 15, 20)
+	if err != nil {
+		t.Fatalf("InsertEventoCompleto diario failed: %v", err)
+	}
+
+	// Weekly event (Segunda-feira = 1)
+	segunda := 1
+	_, err = db.InsertEventoCompleto(ctx, "Alinhamento Semanal", "", "", "", "semanal", &segunda, nil, "09:00", 10, 15)
+	if err != nil {
+		t.Fatalf("InsertEventoCompleto semanal failed: %v", err)
+	}
+
+	// Monthly event (Dia 31 com validação)
+	dia31 := 31
+	_, err = db.InsertEventoCompleto(ctx, "Fechamento Contábil", "", "", "", "mensal", nil, &dia31, "18:00", 0, 10)
+	if err != nil {
+		t.Fatalf("InsertEventoCompleto mensal failed: %v", err)
+	}
+
+	// 2026-11-10 is a Tuesday (Weekday = 2)
+	// Should have: "Reunião de Diretoria" (pontual) + "Academia Diária" (diario) = 2 events
+	eventsTuesday, err := db.GetEventsForDay(ctx, "2026-11-10")
+	if err != nil {
+		t.Fatalf("GetEventsForDay failed: %v", err)
+	}
+	if len(eventsTuesday) != 2 {
+		t.Fatalf("expected 2 events on Tuesday (pontual + diario), got %d", len(eventsTuesday))
+	}
+
+	// 2026-11-09 is a Monday (Weekday = 1)
+	// Should have: "Academia Diária" + "Alinhamento Semanal" = 2 events
+	eventsMonday, err := db.GetEventsForDay(ctx, "2026-11-09")
+	if err != nil {
+		t.Fatalf("GetEventsForDay failed: %v", err)
+	}
+	if len(eventsMonday) != 2 {
+		t.Fatalf("expected 2 events on Monday, got %d", len(eventsMonday))
+	}
+
+	// Test Monthly validation: November only has 30 days!
+	// 2026-11-30 should trigger the day 31 event because 30 is the last day of November.
+	eventsNov30, err := db.GetEventsForDay(ctx, "2026-11-30")
+	if err != nil {
+		t.Fatalf("GetEventsForDay failed: %v", err)
+	}
+	foundFechamento := false
+	for _, ev := range eventsNov30 {
+		if ev.Descricao == "Fechamento Contábil" {
+			foundFechamento = true
+			break
+		}
+	}
+	if !foundFechamento {
+		t.Fatalf("expected 'Fechamento Contábil' to trigger on Nov 30 due to month end clamp")
+	}
+
+	// February in a non-leap year (e.g. 2027-02-28)
+	eventsFeb28, err := db.GetEventsForDay(ctx, "2027-02-28")
+	if err != nil {
+		t.Fatalf("GetEventsForDay failed: %v", err)
+	}
+	foundFeb := false
+	for _, ev := range eventsFeb28 {
+		if ev.Descricao == "Fechamento Contábil" {
+			foundFeb = true
+			break
+		}
+	}
+	if !foundFeb {
+		t.Fatalf("expected 'Fechamento Contábil' to trigger on Feb 28 due to February month end clamp")
+	}
 }

@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"time"
 
@@ -28,6 +29,15 @@ type Evento struct {
 	NotificadoConclusao int
 	Status              string
 	CriadoEm            string
+	Frequencia          string  // 'pontual', 'diario', 'semanal', 'mensal'
+	DiaSemana           *int    // 0 = Domingo, 1 = Segunda, ..., 6 = Sábado
+	DiaMes              *int    // 1 a 31 (com validação do último dia do mês)
+	HorarioTime         string  // "HH:MM"
+	DeslocamentoMin     int
+	PreparoMin          int
+	UltimaNotificacaoB1 *string // "YYYY-MM-DD"
+	UltimaNotificacaoB2 *string // "YYYY-MM-DD"
+	UltimaConclusaoData *string // "YYYY-MM-DD"
 }
 
 type Objetivo struct {
@@ -160,7 +170,16 @@ func (db *DB) migrate(ctx context.Context, isRemote bool) error {
 		notificado_buffer_2 INTEGER DEFAULT 0,
 		notificado_conclusao INTEGER DEFAULT 0,
 		status TEXT CHECK(status IN ('pendente', 'em_andamento', 'concluido', 'esquecido')) DEFAULT 'pendente',
-		criado_em DATETIME DEFAULT CURRENT_TIMESTAMP
+		criado_em DATETIME DEFAULT CURRENT_TIMESTAMP,
+		frequencia TEXT DEFAULT 'pontual',
+		dia_semana INTEGER,
+		dia_mes INTEGER,
+		horario_time TEXT,
+		deslocamento_min INTEGER DEFAULT 25,
+		preparo_min INTEGER DEFAULT 35,
+		ultima_notificacao_b1 TEXT,
+		ultima_notificacao_b2 TEXT,
+		ultima_conclusao_data TEXT
 	);
 
 	CREATE TABLE IF NOT EXISTS objetivos (
@@ -235,6 +254,15 @@ func (db *DB) migrate(ctx context.Context, isRemote bool) error {
 	// Safe column additions for existing tables
 	_, _ = db.ExecContext(ctx, "ALTER TABLE ideias ADD COLUMN suma_executiva TEXT NOT NULL DEFAULT '';")
 	_, _ = db.ExecContext(ctx, "ALTER TABLE ideias ADD COLUMN atualizado_em DATETIME DEFAULT CURRENT_TIMESTAMP;")
+	_, _ = db.ExecContext(ctx, "ALTER TABLE eventos ADD COLUMN frequencia TEXT DEFAULT 'pontual';")
+	_, _ = db.ExecContext(ctx, "ALTER TABLE eventos ADD COLUMN dia_semana INTEGER;")
+	_, _ = db.ExecContext(ctx, "ALTER TABLE eventos ADD COLUMN dia_mes INTEGER;")
+	_, _ = db.ExecContext(ctx, "ALTER TABLE eventos ADD COLUMN horario_time TEXT;")
+	_, _ = db.ExecContext(ctx, "ALTER TABLE eventos ADD COLUMN deslocamento_min INTEGER DEFAULT 25;")
+	_, _ = db.ExecContext(ctx, "ALTER TABLE eventos ADD COLUMN preparo_min INTEGER DEFAULT 35;")
+	_, _ = db.ExecContext(ctx, "ALTER TABLE eventos ADD COLUMN ultima_notificacao_b1 TEXT;")
+	_, _ = db.ExecContext(ctx, "ALTER TABLE eventos ADD COLUMN ultima_notificacao_b2 TEXT;")
+	_, _ = db.ExecContext(ctx, "ALTER TABLE eventos ADD COLUMN ultima_conclusao_data TEXT;")
 
 	// Seed default routines if table is empty
 	var count int
@@ -289,16 +317,33 @@ func (db *DB) GetRecentHistory(ctx context.Context, limit int) ([]ChatMessage, e
 	return list, nil
 }
 
-// InsertEvento saves an event with its calculated buffers.
-func (db *DB) InsertEvento(ctx context.Context, desc, officialTime, b1, b2 string) (int64, error) {
+// InsertEventoCompleto saves an event with full recurrence parameters.
+func (db *DB) InsertEventoCompleto(ctx context.Context, desc, officialTime, b1, b2, freq string, diaSemana, diaMes *int, horarioTime string, desloc, prep int) (int64, error) {
+	if freq == "" {
+		freq = "pontual"
+	}
+	if desloc <= 0 {
+		desloc = 25
+	}
+	if prep <= 0 {
+		prep = 35
+	}
 	res, err := db.ExecContext(ctx, `
-		INSERT INTO eventos (descricao, horario_oficial, horario_buffer_1, horario_buffer_2)
-		VALUES (?, ?, ?, ?)
-	`, desc, officialTime, b1, b2)
+		INSERT INTO eventos (
+			descricao, horario_oficial, horario_buffer_1, horario_buffer_2,
+			frequencia, dia_semana, dia_mes, horario_time, deslocamento_min, preparo_min
+		)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+	`, desc, officialTime, b1, b2, freq, diaSemana, diaMes, horarioTime, desloc, prep)
 	if err != nil {
 		return 0, err
 	}
 	return res.LastInsertId()
+}
+
+// InsertEvento saves an event with its calculated buffers (pontual backward compatible).
+func (db *DB) InsertEvento(ctx context.Context, desc, officialTime, b1, b2 string) (int64, error) {
+	return db.InsertEventoCompleto(ctx, desc, officialTime, b1, b2, "pontual", nil, nil, "", 25, 35)
 }
 
 // InsertIdeia saves an idea with socratic questioning and executive summary.
@@ -502,14 +547,30 @@ func (db *DB) MarkRoutineExecuted(ctx context.Context, id int64, execDate string
 	return err
 }
 
-// GetEventsForDay retrieves events scheduled for a specific date (YYYY-MM-DD).
-func (db *DB) GetEventsForDay(ctx context.Context, dateStr string) ([]Evento, error) {
-	rows, err := db.QueryContext(ctx, `
-		SELECT id, descricao, horario_oficial, horario_buffer_1, horario_buffer_2, notificado_buffer_1, notificado_buffer_2, notificado_conclusao, status, criado_em
+const selectEventoCols = `id, descricao, horario_oficial, COALESCE(horario_buffer_1, ''), COALESCE(horario_buffer_2, ''),
+       notificado_buffer_1, notificado_buffer_2, notificado_conclusao, status, criado_em,
+       COALESCE(frequencia, 'pontual'), dia_semana, dia_mes, COALESCE(horario_time, ''),
+       COALESCE(deslocamento_min, 25), COALESCE(preparo_min, 35),
+       ultima_notificacao_b1, ultima_notificacao_b2, ultima_conclusao_data`
+
+func scanEvento(rows *sql.Rows, e *Evento) error {
+	return rows.Scan(
+		&e.ID, &e.Descricao, &e.HorarioOficial, &e.HorarioBuffer1, &e.HorarioBuffer2,
+		&e.NotificadoBuffer1, &e.NotificadoBuffer2, &e.NotificadoConclusao, &e.Status, &e.CriadoEm,
+		&e.Frequencia, &e.DiaSemana, &e.DiaMes, &e.HorarioTime,
+		&e.DeslocamentoMin, &e.PreparoMin,
+		&e.UltimaNotificacaoB1, &e.UltimaNotificacaoB2, &e.UltimaConclusaoData,
+	)
+}
+
+// GetActiveRecurringEvents returns all active recurring events (diario, semanal, mensal).
+func (db *DB) GetActiveRecurringEvents(ctx context.Context) ([]Evento, error) {
+	rows, err := db.QueryContext(ctx, fmt.Sprintf(`
+		SELECT %s
 		FROM eventos
-		WHERE date(horario_oficial) = date(?)
-		ORDER BY horario_oficial ASC
-	`, dateStr)
+		WHERE status = 'pendente' AND frequencia IN ('diario', 'semanal', 'mensal')
+		ORDER BY id ASC
+	`, selectEventoCols))
 	if err != nil {
 		return nil, err
 	}
@@ -518,11 +579,101 @@ func (db *DB) GetEventsForDay(ctx context.Context, dateStr string) ([]Evento, er
 	var list []Evento
 	for rows.Next() {
 		var e Evento
-		if err := rows.Scan(&e.ID, &e.Descricao, &e.HorarioOficial, &e.HorarioBuffer1, &e.HorarioBuffer2, &e.NotificadoBuffer1, &e.NotificadoBuffer2, &e.NotificadoConclusao, &e.Status, &e.CriadoEm); err != nil {
+		if err := scanEvento(rows, &e); err != nil {
 			return nil, err
 		}
 		list = append(list, e)
 	}
+	return list, nil
+}
+
+// MarkRecurringB1Notified records today's date for recurring prep alert.
+func (db *DB) MarkRecurringB1Notified(ctx context.Context, id int64, todayStr string) error {
+	_, err := db.ExecContext(ctx, "UPDATE eventos SET ultima_notificacao_b1 = ? WHERE id = ?", todayStr, id)
+	return err
+}
+
+// MarkRecurringB2Notified records today's date for recurring departure alert.
+func (db *DB) MarkRecurringB2Notified(ctx context.Context, id int64, todayStr string) error {
+	_, err := db.ExecContext(ctx, "UPDATE eventos SET ultima_notificacao_b2 = ? WHERE id = ?", todayStr, id)
+	return err
+}
+
+// MarkRecurringCompletionNotified records today's date for recurring post-event check.
+func (db *DB) MarkRecurringCompletionNotified(ctx context.Context, id int64, todayStr string) error {
+	_, err := db.ExecContext(ctx, "UPDATE eventos SET ultima_conclusao_data = ? WHERE id = ?", todayStr, id)
+	return err
+}
+
+// GetEventsForDay retrieves events scheduled for a specific date (YYYY-MM-DD),
+// combining punctual events and active recurring events (daily, weekly, monthly) matching the date.
+func (db *DB) GetEventsForDay(ctx context.Context, dateStr string) ([]Evento, error) {
+	rows, err := db.QueryContext(ctx, fmt.Sprintf(`
+		SELECT %s
+		FROM eventos
+		WHERE date(horario_oficial) = date(?) AND (frequencia IS NULL OR frequencia = 'pontual')
+		ORDER BY horario_oficial ASC
+	`, selectEventoCols), dateStr)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var list []Evento
+	for rows.Next() {
+		var e Evento
+		if err := scanEvento(rows, &e); err != nil {
+			return nil, err
+		}
+		list = append(list, e)
+	}
+
+	// Now check recurring events matching this date
+	recurring, err := db.GetActiveRecurringEvents(ctx)
+	if err == nil && len(recurring) > 0 {
+		parsedDate, parseErr := time.Parse("2006-01-02", dateStr)
+		if parseErr == nil {
+			weekday := int(parsedDate.Weekday())
+			// Deterministic last day of this month (e.g. 28/29 Feb, 30 Apr, 31 Dec)
+			ultimoDiaMes := time.Date(parsedDate.Year(), parsedDate.Month()+1, 0, 0, 0, 0, 0, time.UTC).Day()
+
+			for _, rev := range recurring {
+				match := false
+				switch rev.Frequencia {
+				case "diario":
+					match = true
+				case "semanal":
+					if rev.DiaSemana != nil && *rev.DiaSemana == weekday {
+						match = true
+					}
+				case "mensal":
+					if rev.DiaMes != nil {
+						targetDay := *rev.DiaMes
+						if targetDay > ultimoDiaMes {
+							targetDay = ultimoDiaMes
+						}
+						if parsedDate.Day() == targetDay {
+							match = true
+						}
+					}
+				}
+
+				if match {
+					revCopy := rev
+					if revCopy.HorarioTime != "" {
+						revCopy.HorarioOficial = fmt.Sprintf("%s %s:00", dateStr, revCopy.HorarioTime)
+					}
+					list = append(list, revCopy)
+				}
+			}
+		}
+	}
+
+	// Sort unified list by HorarioOficial ASC
+	sort.SliceStable(list, func(i, j int) bool {
+		return list[i].HorarioOficial < list[j].HorarioOficial
+	})
+
 	return list, nil
 }
 
@@ -670,14 +821,15 @@ func (db *DB) GetTokenStats(ctx context.Context, todayStr, monthStr string) (*To
 
 // GetPendingBuffer1Events returns events whose prep time has arrived and not yet notified.
 func (db *DB) GetPendingBuffer1Events(ctx context.Context, nowStr string) ([]Evento, error) {
-	rows, err := db.QueryContext(ctx, `
-		SELECT id, descricao, horario_oficial, horario_buffer_1, horario_buffer_2, notificado_buffer_1, notificado_buffer_2, notificado_conclusao, status, criado_em
+	rows, err := db.QueryContext(ctx, fmt.Sprintf(`
+		SELECT %s
 		FROM eventos
 		WHERE notificado_buffer_1 = 0
 		  AND horario_buffer_1 IS NOT NULL
 		  AND horario_buffer_1 <= ?
 		  AND status = 'pendente'
-	`, nowStr)
+		  AND (frequencia IS NULL OR frequencia = 'pontual')
+	`, selectEventoCols), nowStr)
 	if err != nil {
 		return nil, err
 	}
@@ -686,7 +838,7 @@ func (db *DB) GetPendingBuffer1Events(ctx context.Context, nowStr string) ([]Eve
 	var list []Evento
 	for rows.Next() {
 		var e Evento
-		if err := rows.Scan(&e.ID, &e.Descricao, &e.HorarioOficial, &e.HorarioBuffer1, &e.HorarioBuffer2, &e.NotificadoBuffer1, &e.NotificadoBuffer2, &e.NotificadoConclusao, &e.Status, &e.CriadoEm); err != nil {
+		if err := scanEvento(rows, &e); err != nil {
 			return nil, err
 		}
 		list = append(list, e)
@@ -696,14 +848,15 @@ func (db *DB) GetPendingBuffer1Events(ctx context.Context, nowStr string) ([]Eve
 
 // GetPendingBuffer2Events returns events whose departure time has arrived and not yet notified.
 func (db *DB) GetPendingBuffer2Events(ctx context.Context, nowStr string) ([]Evento, error) {
-	rows, err := db.QueryContext(ctx, `
-		SELECT id, descricao, horario_oficial, horario_buffer_1, horario_buffer_2, notificado_buffer_1, notificado_buffer_2, notificado_conclusao, status, criado_em
+	rows, err := db.QueryContext(ctx, fmt.Sprintf(`
+		SELECT %s
 		FROM eventos
 		WHERE notificado_buffer_2 = 0
 		  AND horario_buffer_2 IS NOT NULL
 		  AND horario_buffer_2 <= ?
 		  AND status = 'pendente'
-	`, nowStr)
+		  AND (frequencia IS NULL OR frequencia = 'pontual')
+	`, selectEventoCols), nowStr)
 	if err != nil {
 		return nil, err
 	}
@@ -712,7 +865,7 @@ func (db *DB) GetPendingBuffer2Events(ctx context.Context, nowStr string) ([]Eve
 	var list []Evento
 	for rows.Next() {
 		var e Evento
-		if err := rows.Scan(&e.ID, &e.Descricao, &e.HorarioOficial, &e.HorarioBuffer1, &e.HorarioBuffer2, &e.NotificadoBuffer1, &e.NotificadoBuffer2, &e.NotificadoConclusao, &e.Status, &e.CriadoEm); err != nil {
+		if err := scanEvento(rows, &e); err != nil {
 			return nil, err
 		}
 		list = append(list, e)
@@ -722,14 +875,15 @@ func (db *DB) GetPendingBuffer2Events(ctx context.Context, nowStr string) ([]Eve
 
 // GetPendingCompletionEvents returns events that finished >= 15 min ago to ask for confirmation.
 func (db *DB) GetPendingCompletionEvents(ctx context.Context, thresholdStr string) ([]Evento, error) {
-	rows, err := db.QueryContext(ctx, `
-		SELECT id, descricao, horario_oficial, horario_buffer_1, horario_buffer_2, notificado_buffer_1, notificado_buffer_2, notificado_conclusao, status, criado_em
+	rows, err := db.QueryContext(ctx, fmt.Sprintf(`
+		SELECT %s
 		FROM eventos
 		WHERE notificado_conclusao = 0
 		  AND horario_oficial <= ?
 		  AND status = 'pendente'
+		  AND (frequencia IS NULL OR frequencia = 'pontual')
 		LIMIT 5
-	`, thresholdStr)
+	`, selectEventoCols), thresholdStr)
 	if err != nil {
 		return nil, err
 	}
@@ -738,7 +892,7 @@ func (db *DB) GetPendingCompletionEvents(ctx context.Context, thresholdStr strin
 	var list []Evento
 	for rows.Next() {
 		var e Evento
-		if err := rows.Scan(&e.ID, &e.Descricao, &e.HorarioOficial, &e.HorarioBuffer1, &e.HorarioBuffer2, &e.NotificadoBuffer1, &e.NotificadoBuffer2, &e.NotificadoConclusao, &e.Status, &e.CriadoEm); err != nil {
+		if err := scanEvento(rows, &e); err != nil {
 			return nil, err
 		}
 		list = append(list, e)
@@ -763,13 +917,13 @@ func (db *DB) MarkCompletionNotified(ctx context.Context, id int64) error {
 
 // GetUpcomingEvents fetches pending and upcoming events for the calendar.
 func (db *DB) GetUpcomingEvents(ctx context.Context, limit int) ([]Evento, error) {
-	rows, err := db.QueryContext(ctx, `
-		SELECT id, descricao, horario_oficial, horario_buffer_1, horario_buffer_2, notificado_buffer_1, notificado_buffer_2, notificado_conclusao, status, criado_em
+	rows, err := db.QueryContext(ctx, fmt.Sprintf(`
+		SELECT %s
 		FROM eventos
 		WHERE status != 'concluido'
 		ORDER BY horario_oficial ASC
 		LIMIT ?
-	`, limit)
+	`, selectEventoCols), limit)
 	if err != nil {
 		return nil, err
 	}
@@ -778,7 +932,7 @@ func (db *DB) GetUpcomingEvents(ctx context.Context, limit int) ([]Evento, error
 	var list []Evento
 	for rows.Next() {
 		var e Evento
-		if err := rows.Scan(&e.ID, &e.Descricao, &e.HorarioOficial, &e.HorarioBuffer1, &e.HorarioBuffer2, &e.NotificadoBuffer1, &e.NotificadoBuffer2, &e.NotificadoConclusao, &e.Status, &e.CriadoEm); err != nil {
+		if err := scanEvento(rows, &e); err != nil {
 			return nil, err
 		}
 		list = append(list, e)

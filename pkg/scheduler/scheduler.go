@@ -5,8 +5,11 @@ import (
 	"fmt"
 	"log"
 	"path/filepath"
+	"strconv"
+	"strings"
 	"time"
 
+	"atlas/pkg/calculator"
 	"atlas/pkg/config"
 	"atlas/pkg/database"
 	"atlas/pkg/nlu"
@@ -74,6 +77,7 @@ func (e *Engine) Tick(ctx context.Context) {
 }
 
 func (e *Engine) processEventBuffers(ctx context.Context, now time.Time, nowStr string) {
+	// --- A) EVENTOS PONTUAIS ---
 	// Buffer 1: Prep / Shower Alert
 	prepEvents, err := e.db.GetPendingBuffer1Events(ctx, nowStr)
 	if err == nil {
@@ -104,6 +108,94 @@ func (e *Engine) processEventBuffers(ctx context.Context, now time.Time, nowStr 
 			msg := fmt.Sprintf("⏱️ *Compromisso Finalizado*\n\nO evento *%s* (agendado para %s) encerrou. Deseja marcar como concluído ou precisa de algum ajuste?", ev.Descricao, ev.HorarioOficial)
 			if err := e.tg.SendMessage(ctx, e.cfg.TelegramChatID, msg); err == nil {
 				_ = e.db.MarkCompletionNotified(ctx, ev.ID)
+			}
+		}
+	}
+
+	// --- B) EVENTOS RECORRENTES (DIÁRIOS, SEMANAIS, MENSAIS) COM ZERO TOKENS ---
+	recurringEvents, err := e.db.GetActiveRecurringEvents(ctx)
+	if err == nil && len(recurringEvents) > 0 {
+		todayStr := now.Format("2006-01-02")
+		weekday := int(now.Weekday())
+		loc := now.Location()
+		ultimoDiaMes := time.Date(now.Year(), now.Month()+1, 0, 0, 0, 0, 0, loc).Day()
+
+		for _, rev := range recurringEvents {
+			match := false
+			freqLabel := ""
+			switch rev.Frequencia {
+			case "diario":
+				match = true
+				freqLabel = "Diário"
+			case "semanal":
+				if rev.DiaSemana != nil && *rev.DiaSemana == weekday {
+					match = true
+					freqLabel = "Semanal"
+				}
+			case "mensal":
+				if rev.DiaMes != nil {
+					targetDay := *rev.DiaMes
+					if targetDay > ultimoDiaMes {
+						targetDay = ultimoDiaMes
+					}
+					if now.Day() == targetDay {
+						match = true
+						freqLabel = "Mensal"
+					}
+				}
+			}
+
+			if !match || rev.HorarioTime == "" {
+				continue
+			}
+
+			parts := strings.Split(rev.HorarioTime, ":")
+			if len(parts) < 2 {
+				continue
+			}
+			hh, _ := strconv.Atoi(parts[0])
+			mm, _ := strconv.Atoi(parts[1])
+			oficialToday := time.Date(now.Year(), now.Month(), now.Day(), hh, mm, 0, 0, loc)
+
+			desloc := rev.DeslocamentoMin
+			if desloc <= 0 {
+				desloc = 25
+			}
+			prep := rev.PreparoMin
+			if prep <= 0 {
+				prep = 35
+			}
+
+			buffers := calculator.Calculate(oficialToday, desloc, prep, calculator.DefaultDelayMargin)
+
+			// Buffer 1 (Preparo)
+			if !now.Before(buffers.BufferPrep) && (rev.UltimaNotificacaoB1 == nil || *rev.UltimaNotificacaoB1 != todayStr) {
+				if now.Before(oficialToday.Add(30 * time.Minute)) {
+					msg := fmt.Sprintf("🛁 *Alerta de Preparo! (%s • +15%% margem)*\n\nHora de começar a se arrumar para:\n👉 *%s*\n⏰ Marcado para hoje às: *%02d:%02d*", freqLabel, rev.Descricao, hh, mm)
+					if err := e.tg.SendMessage(ctx, e.cfg.TelegramChatID, msg); err == nil {
+						_ = e.db.MarkRecurringB1Notified(ctx, rev.ID, todayStr)
+					}
+				}
+			}
+
+			// Buffer 2 (Saída)
+			if !now.Before(buffers.BufferLeave) && (rev.UltimaNotificacaoB2 == nil || *rev.UltimaNotificacaoB2 != todayStr) {
+				if now.Before(oficialToday.Add(30 * time.Minute)) {
+					msg := fmt.Sprintf("🚗 *Alerta de Saída! (%s • +15%% margem)*\n\nHora de sair de casa para:\n👉 *%s*\n⏰ Marcado para hoje às: *%02d:%02d*", freqLabel, rev.Descricao, hh, mm)
+					if err := e.tg.SendMessage(ctx, e.cfg.TelegramChatID, msg); err == nil {
+						_ = e.db.MarkRecurringB2Notified(ctx, rev.ID, todayStr)
+					}
+				}
+			}
+
+			// Auditoria Pós-Evento (15 min após o horário oficial)
+			if !now.Before(oficialToday.Add(15 * time.Minute)) && (rev.UltimaConclusaoData == nil || *rev.UltimaConclusaoData != todayStr) {
+				if now.Before(oficialToday.Add(2 * time.Hour)) {
+					msg := fmt.Sprintf("⏱️ *Compromisso Recorrente (%s)*\n\nO evento *%s* (programado para às %02d:%02d) foi concluído com sucesso hoje?", freqLabel, rev.Descricao, hh, mm)
+					if err := e.tg.SendMessage(ctx, e.cfg.TelegramChatID, msg); err == nil {
+						_ = e.db.MarkRecurringCompletionNotified(ctx, rev.ID, todayStr)
+					}
+				}
 			}
 		}
 	}

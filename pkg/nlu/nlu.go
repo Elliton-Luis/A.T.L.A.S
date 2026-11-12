@@ -39,6 +39,9 @@ type IntentResult struct {
 	ChaveMemoria              string `json:"chave_memoria,omitempty"`
 	ValorMemoria              string `json:"valor_memoria,omitempty"`
 	Descricao                 string `json:"descricao,omitempty"`
+	Frequencia                string `json:"frequencia,omitempty"` // "pontual", "diario", "semanal", "mensal"
+	DiaSemana                 *int   `json:"dia_semana,omitempty"` // 0=Domingo, 1=Segunda, ..., 6=Sábado
+	DiaMes                    *int   `json:"dia_mes,omitempty"`    // 1 a 31
 	HorarioOficial            string `json:"horario_oficial,omitempty"`
 	EstimativaDeslocamentoMin int    `json:"estimativa_deslocamento_min,omitempty"`
 	EstimativaPreparoMin      int    `json:"estimativa_preparo_min,omitempty"`
@@ -258,12 +261,16 @@ Classifique a intenção estritamente em uma das opções abaixo e responda EXCL
   "chave_memoria": "palavra_chave_a_remover"
 }
 
-5. Para compromissos / eventos na agenda:
+5. Para compromissos / eventos na agenda (PONTUAIS ou RECORRENTES):
 {
   "tipo": "evento",
   "complexidade": "simples",
   "descricao": "Nome do compromisso",
-  "horario_oficial": "YYYY-MM-DD HH:MM:SS",
+  "frequencia": "pontual" ou "diario" ou "semanal" ou "mensal",
+  "horario": "HH:MM",
+  "horario_oficial": "YYYY-MM-DD HH:MM:SS" (obrigatório se frequencia for "pontual"),
+  "dia_semana": 0 a 6 (0=Domingo, 1=Segunda, 2=Terça, 3=Quarta, 4=Quinta, 5=Sexta, 6=Sábado; use apenas se frequencia for "semanal"),
+  "dia_mes": 1 a 31 (use apenas se frequencia for "mensal"),
   "estimativa_deslocamento_min": 25,
   "estimativa_preparo_min": 35
 }
