@@ -311,10 +311,10 @@ Classifique a intenção estritamente em uma das opções abaixo e responda EXCL
   "mensagem": "Mensagem exata a ser disparada todo dia"
 }
 
-8. Para ações do app e buscas na web (liturgia, noticias, resumir_link, apagar_rotina, listar_agenda, listar_lembretes, limpar_agenda, etc.):
+8. Para ações do app e buscas na web (liturgia, noticias, resumir_link, apagar_rotina, listar_agenda, ver_calendario, listar_lembretes, limpar_agenda, limpar_lembretes, etc.):
 {
   "tipo": "acao",
-  "acao": "liturgia" ou "noticias" ou "resumir_link" ou "apagar_rotina" ou "alterar_rotina" ou "toggle_rotina" ou "concluir_evento" ou "apagar_evento" ou "limpar_agenda" ou "atualizar_meta" ou "fazer_backup" ou "listar_agenda" ou "listar_lembretes" ou "ver_perfil",
+  "acao": "liturgia" ou "noticias" ou "resumir_link" ou "apagar_rotina" ou "alterar_rotina" ou "toggle_rotina" ou "concluir_evento" ou "apagar_evento" ou "limpar_agenda" ou "limpar_lembretes" ou "atualizar_meta" ou "fazer_backup" ou "listar_agenda" (apenas para compromissos de hoje) ou "ver_calendario" (grade de emojis e compromissos do mês inteiro) ou "listar_lembretes" ou "ver_perfil",
   "id": 0,
   "termo": "palavra-chave",
   "url": "https://...",

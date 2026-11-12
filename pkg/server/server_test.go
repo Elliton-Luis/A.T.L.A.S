@@ -273,3 +273,41 @@ func TestSonarBridgeCommand(t *testing.T) {
 		t.Errorf("expected SONAR_BRIDGE_ONLINE, got: %s", res.Output)
 	}
 }
+
+func TestMatchFastPathPriorities(t *testing.T) {
+	testCases := []struct {
+		input       string
+		expectedCmd string
+		expectMatch bool
+	}{
+		{"me mostre o calendario", "/mes", true},
+		{"mostre o calendário", "/mes", true},
+		{"calendário do mês", "/mes", true},
+		{"ver calendario", "/mes", true},
+		{"calendario", "/mes", true},
+		{"o que tenho hoje", "/hoje", true},
+		{"agenda de hoje", "/hoje", true},
+		{"hoje", "/hoje", true},
+		{"minha agenda", "/hoje", true},
+		{"limpar agenda", "/limpar_agenda", true},
+		{"apagar todos os compromissos", "/limpar_agenda", true},
+		{"limpar lembretes", "/limpar_lembretes", true},
+		{"apagar todos os lembretes", "/limpar_lembretes", true},
+		{"liturgia de hoje", "/liturgia", true},
+		{"meu perfil", "/perfil", true},
+		{"minhas metas", "/metas", true},
+		{"git status", "/sonar git status", true},
+		{"$ ls -la", "/sonar ls -la", true},
+		{"sonar df -h", "/sonar df -h", true},
+	}
+
+	for _, tc := range testCases {
+		cmd, ok := matchFastPath(tc.input)
+		if ok != tc.expectMatch {
+			t.Errorf("input '%s': expected match %v, got %v", tc.input, tc.expectMatch, ok)
+		}
+		if ok && cmd != tc.expectedCmd {
+			t.Errorf("input '%s': expected cmd '%s', got '%s'", tc.input, tc.expectedCmd, cmd)
+		}
+	}
+}

@@ -894,6 +894,9 @@ func (s *Server) executeAppAction(ctx context.Context, intent *nlu.IntentResult)
 		}
 		return sb.String()
 
+	case "ver_calendario", "calendario", "ver_mes":
+		return s.formatMonthlyCalendarView(ctx)
+
 	case "listar_lembretes":
 		routines, _ := s.db.GetAllRoutines(ctx)
 		if len(routines) == 0 {
@@ -1027,12 +1030,8 @@ func (s *Server) handleCommand(ctx context.Context, chatID int64, cmdText string
 		}
 
 	case "/mes", "/calendario":
-		now := time.Now().In(s.cfg.Location)
-		counts, _ := s.db.GetMonthEventCounts(ctx, now.Year(), now.Month())
-		grid := calendar.RenderEmojiCalendar(now.Year(), now.Month(), now, counts)
-		calURL := fmt.Sprintf("%s/calendar.ics?token=%s", s.getPublicURL(), s.cfg.CalendarToken)
-		fullMsg := fmt.Sprintf("%s\n\n🔗 _Sync Google/Apple Calendar:_ `%s`", grid, calURL)
-		_ = s.tg.SendMessage(ctx, chatID, fullMsg)
+		view := s.formatMonthlyCalendarView(ctx)
+		_ = s.tg.SendMessage(ctx, chatID, view)
 
 	case "/rotinas", "/lembretes":
 		routines, err := s.db.GetAllRoutines(ctx)
@@ -1347,6 +1346,64 @@ func (s *Server) handleCalendarICS(w http.ResponseWriter, r *http.Request) {
 	_, _ = w.Write([]byte(icsData))
 }
 
+func (s *Server) formatMonthlyCalendarView(ctx context.Context) string {
+	now := time.Now().In(s.cfg.Location)
+	counts, _ := s.db.GetMonthEventCounts(ctx, now.Year(), now.Month())
+	grid := calendar.RenderEmojiCalendar(now.Year(), now.Month(), now, counts)
+
+	var sb strings.Builder
+	sb.WriteString(grid)
+
+	lastDay := time.Date(now.Year(), now.Month()+1, 0, 0, 0, 0, 0, s.cfg.Location).Day()
+	var monthEvents []string
+	for d := 1; d <= lastDay; d++ {
+		dateStr := fmt.Sprintf("%04d-%02d-%02d", now.Year(), int(now.Month()), d)
+		evts, err := s.db.GetEventsForDay(ctx, dateStr)
+		if err == nil && len(evts) > 0 {
+			for _, ev := range evts {
+				badge := ""
+				switch ev.Frequencia {
+				case "diario":
+					badge = " 🔄"
+				case "semanal":
+					badge = " 🔁"
+				case "mensal":
+					badge = " 🗓️"
+				}
+				horarioDisplay := ev.HorarioTime
+				if horarioDisplay == "" && ev.HorarioOficial != "" {
+					if t, parseErr := parseTimeFlexible(ev.HorarioOficial, s.cfg.Location); parseErr == nil {
+						horarioDisplay = t.Format("15:04")
+					}
+				}
+				monthEvents = append(monthEvents, fmt.Sprintf("• *%02d/%02d* às *%s* — %s%s", d, int(now.Month()), horarioDisplay, ev.Descricao, badge))
+			}
+		}
+	}
+
+	if len(monthEvents) > 0 {
+		sb.WriteString("\n\n📌 *Compromissos Agendados Deste Mês:*\n")
+		maxShow := 15
+		if len(monthEvents) > maxShow {
+			for i := 0; i < maxShow; i++ {
+				sb.WriteString(monthEvents[i] + "\n")
+			}
+			sb.WriteString(fmt.Sprintf("_... e mais %d compromisso(s) recorrente(s)_\n", len(monthEvents)-maxShow))
+		} else {
+			for _, me := range monthEvents {
+				sb.WriteString(me + "\n")
+			}
+		}
+	} else {
+		sb.WriteString("\n\n✨ _Nenhum compromisso agendado para este mês._")
+	}
+
+	calURL := fmt.Sprintf("%s/calendar.ics?token=%s", s.getPublicURL(), s.cfg.CalendarToken)
+	sb.WriteString(fmt.Sprintf("\n\n🔗 _Sync Google/Apple Calendar:_ `%s`", calURL))
+
+	return sb.String()
+}
+
 func parseTimeFlexible(timeStr string, loc *time.Location) (time.Time, error) {
 	timeStr = strings.TrimSpace(timeStr)
 	formats := []string{
@@ -1366,47 +1423,105 @@ func parseTimeFlexible(timeStr string, loc *time.Location) (time.Time, error) {
 
 func matchFastPath(text string) (string, bool) {
 	norm := strings.ToLower(strings.TrimSpace(text))
-	norm = strings.Trim(norm, ".,!?\"'#")
+	// Remove acentos para facilitar regex e correspondência semântica rápida
+	norm = strings.ReplaceAll(norm, "á", "a")
+	norm = strings.ReplaceAll(norm, "à", "a")
+	norm = strings.ReplaceAll(norm, "ã", "a")
+	norm = strings.ReplaceAll(norm, "â", "a")
+	norm = strings.ReplaceAll(norm, "é", "e")
+	norm = strings.ReplaceAll(norm, "ê", "e")
+	norm = strings.ReplaceAll(norm, "í", "i")
+	norm = strings.ReplaceAll(norm, "ó", "o")
+	norm = strings.ReplaceAll(norm, "ô", "o")
+	norm = strings.ReplaceAll(norm, "õ", "o")
+	norm = strings.ReplaceAll(norm, "ú", "u")
+	norm = strings.ReplaceAll(norm, "ç", "c")
+	clean := strings.Trim(norm, ".,!?\"'#;:")
 
-	switch norm {
-	case "hoje", "agenda", "minha agenda", "agenda de hoje", "compromissos", "meus compromissos", "o que tenho hoje", "ver agenda":
-		return "/hoje", true
-	case "mes", "mês", "calendario", "calendário", "meu mes", "meu mês", "calendario do mes", "calendario do mês", "calendario de emojis", "ver mes", "ver mês":
-		return "/mes", true
-	case "liturgia", "liturgia de hoje", "evangelho", "evangelho de hoje":
+	// 1. Terminal Sonar / Bash Shortcuts
+	if strings.HasPrefix(clean, "sonar ") {
+		return "/sonar " + strings.TrimSpace(strings.TrimPrefix(clean, "sonar ")), true
+	}
+	if strings.HasPrefix(clean, "$") {
+		return "/sonar " + strings.TrimSpace(strings.TrimPrefix(clean, "$")), true
+	}
+	if clean == "git status" || clean == "git diff" || clean == "git branch" || clean == "git log" ||
+		clean == "pwd" || clean == "ls" || clean == "ls -la" || clean == "df -h" || clean == "free -m" || clean == "uptime" {
+		return "/sonar " + clean, true
+	}
+
+	// 2. Limpeza com Confirmação (Prioridade para segurança)
+	if strings.Contains(clean, "limpar") || strings.Contains(clean, "apagar todos") || strings.Contains(clean, "zerar") || strings.Contains(clean, "excluir todos") {
+		if strings.Contains(clean, "lembrete") || strings.Contains(clean, "rotina") {
+			return "/limpar_lembretes", true
+		}
+		if strings.Contains(clean, "agenda") || strings.Contains(clean, "compromisso") || strings.Contains(clean, "evento") || strings.Contains(clean, "tudo") {
+			return "/limpar_agenda", true
+		}
+	}
+
+	// 3. Liturgia / Evangelho (Antes de 'hoje' para capturar 'liturgia de hoje')
+	if strings.Contains(clean, "liturgia") || strings.Contains(clean, "evangelho") {
 		return "/liturgia", true
-	case "perfil", "meu perfil", "minha memoria", "minhas memorias", "minha memória", "minhas memórias", "o que voce sabe sobre mim", "o que você sabe sobre mim":
-		return "/perfil", true
-	case "metas", "minhas metas", "objetivos", "meus objetivos", "ver metas":
-		return "/metas", true
-	case "ideias", "minhas ideias", "projetos", "meus projetos", "ver ideias":
-		return "/ideias", true
-	case "lembretes", "meus lembretes", "rotinas", "minhas rotinas", "ver rotinas", "ver lembretes":
-		return "/lembretes", true
-	case "tokens", "meus tokens", "gasto de tokens", "consumo", "consumo de tokens":
-		return "/tokens", true
-	case "hud", "painel", "abrir hud", "abrir painel":
-		return "/hud", true
-	case "ajuda", "help", "como usar", "comandos", "menu":
-		return "/ajuda", true
-	case "backup", "fazer backup":
-		return "/backup", true
-	case "limpar agenda", "limpar compromissos", "limpar tudo", "apagar agenda", "apagar todos os compromissos", "apagar todos compromissos", "excluir todos os compromissos", "limpar todos os compromissos", "zerar agenda", "zerar compromissos", "apagar meus compromissos":
-		return "/limpar_agenda", true
-	case "limpar lembretes", "limpar rotinas", "apagar todos os lembretes", "apagar todos lembretes", "excluir todos os lembretes", "zerar lembretes", "zerar rotinas", "apagar lembretes", "apagar rotinas":
-		return "/limpar_lembretes", true
 	}
 
-	// Atalhos do Sonar CLI (Terminal Linux Zero Tokens)
-	if strings.HasPrefix(norm, "sonar ") {
-		return "/sonar " + strings.TrimPrefix(norm, "sonar "), true
+	// 4. CALENDÁRIO / MÊS COMPLETO (Separado categoricamente de "hoje")
+	// Captura: "calendario", "me mostre o calendario", "mostre o calendario", "ver calendario", "calendario do mes", "ver mes", "grade", etc.
+	if strings.Contains(clean, "calendario") || strings.Contains(clean, "do mes") || strings.Contains(clean, "deste mes") ||
+		strings.Contains(clean, "grade") || clean == "mes" || clean == "ver mes" || clean == "meu mes" || clean == "mes atual" {
+		return "/mes", true
 	}
-	if strings.HasPrefix(norm, "$ ") || strings.HasPrefix(norm, "$") {
-		return "/sonar " + strings.TrimPrefix(norm, "$"), true
+
+	// 5. HOJE (Apenas a agenda do dia atual com tempos de preparo e saída)
+	if strings.Contains(clean, "hoje") || strings.Contains(clean, "pra hoje") || strings.Contains(clean, "de hoje") ||
+		strings.Contains(clean, "o que tenho hoje") || strings.Contains(clean, "agenda de hoje") ||
+		clean == "agenda" || clean == "minha agenda" || clean == "compromissos" || clean == "meus compromissos" || clean == "ver agenda" {
+		return "/hoje", true
 	}
-	if norm == "git status" || norm == "git diff" || norm == "git branch" || norm == "git log" ||
-		norm == "pwd" || norm == "ls" || norm == "ls -la" || norm == "df -h" || norm == "free -m" || norm == "uptime" {
-		return "/sonar " + norm, true
+
+	// 6. Perfil / Memória Permanente
+	if strings.Contains(clean, "perfil") || strings.Contains(clean, "minha memoria") || strings.Contains(clean, "minhas memorias") ||
+		strings.Contains(clean, "o que sabe sobre mim") || strings.Contains(clean, "o que voce sabe") || clean == "quem sou eu" {
+		return "/perfil", true
+	}
+
+	// 7. Metas / Objetivos
+	if strings.Contains(clean, "metas") || strings.Contains(clean, "minhas metas") || strings.Contains(clean, "meus objetivos") ||
+		clean == "metas" || clean == "objetivos" || clean == "ver metas" {
+		return "/metas", true
+	}
+
+	// 8. Ideias / Projetos (quando NÃO for anotação de nova ideia)
+	if (strings.Contains(clean, "minhas ideias") || strings.Contains(clean, "ver ideias") || strings.Contains(clean, "listar ideias") ||
+		clean == "ideias" || clean == "projetos" || clean == "meus projetos") &&
+		!strings.Contains(clean, "anotar") && !strings.Contains(clean, "nova ideia") && !strings.Contains(clean, "tive uma ideia") {
+		return "/ideias", true
+	}
+
+	// 9. Lembretes / Rotinas
+	if strings.Contains(clean, "meus lembretes") || strings.Contains(clean, "minhas rotinas") ||
+		clean == "lembretes" || clean == "rotinas" || clean == "ver rotinas" || clean == "ver lembretes" {
+		return "/lembretes", true
+	}
+
+	// 10. Tokens / Telemetria
+	if strings.Contains(clean, "token") || strings.Contains(clean, "consumo") || strings.Contains(clean, "gasto de tokens") {
+		return "/tokens", true
+	}
+
+	// 11. HUD / Painel
+	if clean == "hud" || clean == "painel" || strings.Contains(clean, "abrir hud") || strings.Contains(clean, "abrir painel") {
+		return "/hud", true
+	}
+
+	// 12. Ajuda / Menu
+	if clean == "ajuda" || clean == "help" || clean == "menu" || clean == "como usar" || clean == "comandos" {
+		return "/ajuda", true
+	}
+
+	// 13. Backup
+	if clean == "backup" || strings.Contains(clean, "fazer backup") {
+		return "/backup", true
 	}
 
 	return "", false
