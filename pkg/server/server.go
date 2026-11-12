@@ -108,6 +108,14 @@ func (s *Server) Close() error {
 	return nil
 }
 
+func (s *Server) getPublicURL() string {
+	url := strings.TrimSpace(s.cfg.PublicURL)
+	if url == "" || strings.Contains(url, "loca.lt") || strings.Contains(url, "localhost") {
+		return "https://a-t-l-a-s.vercel.app"
+	}
+	return strings.TrimSuffix(url, "/")
+}
+
 func (s *Server) handleRoot(w http.ResponseWriter, r *http.Request) {
 	if r.URL.Path != "/" && r.URL.Path != "/api" {
 		http.NotFound(w, r)
@@ -245,8 +253,10 @@ func (s *Server) processIncomingMessage(ctx context.Context, msg *telegram.Messa
 
 	_ = s.db.RecordHistory(ctx, "user", inputText)
 	history, _ := s.db.GetRecentHistory(ctx, s.cfg.HistoryLimit)
+	memories, _ := s.db.GetAllUserMemories(ctx)
+	latestIdeia, _ := s.db.GetLatestActiveIdeia(ctx)
 
-	intent, err := s.nluClient.ParseIntent(ctx, inputText, currentDatetime, history)
+	intent, err := s.nluClient.ParseIntent(ctx, inputText, currentDatetime, history, memories, latestIdeia)
 	if err != nil {
 		log.Printf("[Erro NLU] %v\n", err)
 		reply := "⚠️ Ocorreu uma oscilação no processamento do seu pensamento. Repita de forma mais concisa."
@@ -255,24 +265,33 @@ func (s *Server) processIncomingMessage(ctx context.Context, msg *telegram.Messa
 		return
 	}
 
+	// Registrar consumo de tokens
+	if intent.TotalTokens > 0 {
+		_ = s.db.RecordTokenUsage(ctx, intent.ProvedorUsado, intent.ModeloUsado, intent.PromptTokens, intent.CompletionTokens, intent.TotalTokens)
+	}
+
 	// Tarefa pesada / pesquisa complexa
 	if intent.Complexidade == "pesada" {
 		curiosity := nlu.RandomCuriosity()
-		waitingMsg := fmt.Sprintf("⏳ *Esta solicitação exige análise aprofundada.* Acionando o núcleo de processamento pesado da NVIDIA...\n\nEnquanto isso, uma curiosidade aleatória para você:\n🦩 _%s_", curiosity)
+		waitingMsg := fmt.Sprintf("⏳ *Esta solicitação exige análise aprofundada.* Acionando o núcleo de processamento inteligente da NVIDIA (Nemotron)...\n\nEnquanto isso, uma curiosidade aleatória para você:\n🦩 _%s_", curiosity)
 		_ = s.tg.SendMessage(ctx, chatID, waitingMsg)
 
 		go func(promptText string, chatHistory []database.ChatMessage) {
 			heavyCtx, cancel := context.WithTimeout(context.Background(), 75*time.Second)
 			defer cancel()
 
-			deepResponse, err := s.nluClient.DeepAnalyze(heavyCtx, promptText, chatHistory)
+			deepRes, err := s.nluClient.DeepAnalyze(heavyCtx, promptText, chatHistory)
 			if err != nil {
 				log.Printf("[Erro NVIDIA Heavy] %v\n", err)
 				_ = s.tg.SendMessage(heavyCtx, chatID, "⚠️ Houve uma instabilidade momentânea na análise da NVIDIA.")
 				return
 			}
 
-			deepResponse = nlu.SanitizeHumanResponse(deepResponse)
+			if deepRes.TotalTokens > 0 {
+				_ = s.db.RecordTokenUsage(heavyCtx, deepRes.Provider, deepRes.Model, deepRes.PromptTokens, deepRes.ComplTokens, deepRes.TotalTokens)
+			}
+
+			deepResponse := nlu.SanitizeHumanResponse(deepRes.Text)
 			_ = s.tg.SendMessage(heavyCtx, chatID, deepResponse)
 			_ = s.db.RecordHistory(heavyCtx, "assistant", deepResponse)
 		}(inputText, history)
@@ -284,12 +303,51 @@ func (s *Server) processIncomingMessage(ctx context.Context, msg *telegram.Messa
 
 	switch intent.Tipo {
 	case "ideia":
-		_, err := s.db.InsertIdeia(ctx, intent.Titulo, intent.Conteudo, intent.PerguntaSocratica)
+		suma := intent.SumaIdeia
+		if suma == "" {
+			suma = intent.Conteudo
+		}
+		id, err := s.db.InsertIdeia(ctx, intent.Titulo, intent.Conteudo, suma, intent.PerguntaSocratica)
 		if err != nil {
 			log.Printf("[Erro DB Ideia] %v\n", err)
 			reply = "⚠️ Falha ao registrar ideia no banco."
 		} else {
-			reply = fmt.Sprintf("💡 *Ideia Registrada:* %s\n\n🔍 *Ponto de Atenção:*\n%s", intent.Titulo, intent.PerguntaSocratica)
+			reply = fmt.Sprintf("💡 *Ideia #%d Registrada com Sucesso!*\n📌 *Título:* %s\n\n📋 *Suma da Ideia:*\n%s\n\n⚔️ *Provocação Socrática:*\n%s\n\n_Para adicionar mais pontos a essa ideia, basta continuar falando ou digitar `/ideia %d`._",
+				id, intent.Titulo, suma, intent.PerguntaSocratica, id)
+		}
+
+	case "adicionar_ideia":
+		targetID := intent.ID
+		if targetID == 0 && latestIdeia != nil {
+			targetID = latestIdeia.ID
+		}
+		if targetID > 0 {
+			_ = s.db.AppendToIdeia(ctx, targetID, intent.Conteudo, intent.SumaIdeia)
+			reply = fmt.Sprintf("💡 *Ideia #%d Atualizada!*\n📌 *Novo ponto adicionado:* %s\n\n📋 *Suma Acumulada da Ideia:*\n%s\n\n⚔️ *Ponto de Atenção:*\n%s\n\n_Consulte a suma completa a qualquer momento com `/ideia %d`._",
+				targetID, intent.Conteudo, intent.SumaIdeia, intent.PerguntaSocratica, targetID)
+		} else {
+			id, _ := s.db.InsertIdeia(ctx, "Pensamento em Desenvolvimento", intent.Conteudo, intent.SumaIdeia, intent.PerguntaSocratica)
+			reply = fmt.Sprintf("💡 *Nova Ideia #%d Registrada!*\n📋 *Suma:*\n%s", id, intent.SumaIdeia)
+		}
+
+	case "lembrar_fato":
+		if intent.ChaveMemoria != "" && intent.ValorMemoria != "" {
+			_ = s.db.SaveUserMemory(ctx, intent.ChaveMemoria, intent.ValorMemoria)
+			if intent.Resposta != "" {
+				reply = intent.Resposta
+			} else {
+				reply = fmt.Sprintf("🧠 *Informação Gravada com Sucesso!*\nGuarde isto com prioridade: *%s* = %s", intent.ChaveMemoria, intent.ValorMemoria)
+			}
+		} else {
+			reply = "🧠 Fato anotado em sua memória permanente."
+		}
+
+	case "esquecer_fato":
+		if intent.ChaveMemoria != "" {
+			_ = s.db.DeleteUserMemory(ctx, intent.ChaveMemoria)
+			reply = fmt.Sprintf("🧠 A informação sobre *'%s'* foi esquecida e removida da sua memória.", intent.ChaveMemoria)
+		} else {
+			reply = "Memória atualizada."
 		}
 
 	case "evento":
@@ -425,10 +483,13 @@ func (s *Server) executeAppAction(ctx context.Context, intent *nlu.IntentResult)
 		}
 		summaryPrompt := fmt.Sprintf("Resuma este artigo/página em tópicos executivos diretos e concisos (máx 3 parágrafos):\n\n%s", pageText)
 		summaryResp, err := s.nluClient.DeepAnalyze(ctx, summaryPrompt, nil)
-		if err != nil || summaryResp == "" {
+		if err != nil || summaryResp == nil || summaryResp.Text == "" {
 			return fmt.Sprintf("📄 *Conteúdo da Página:*\n\n%s", pageText)
 		}
-		return fmt.Sprintf("📄 *Resumo Executivo do Link:*\n\n%s\n\n🔗 *Fonte:* %s", summaryResp, link)
+		if summaryResp.TotalTokens > 0 {
+			_ = s.db.RecordTokenUsage(ctx, summaryResp.Provider, summaryResp.Model, summaryResp.PromptTokens, summaryResp.ComplTokens, summaryResp.TotalTokens)
+		}
+		return fmt.Sprintf("📄 *Resumo Executivo do Link:*\n\n%s\n\n🔗 *Fonte:* %s", summaryResp.Text, link)
 
 	case "alterar_rotina":
 		if intent.Horario == "" {
@@ -539,6 +600,18 @@ func (s *Server) executeAppAction(ctx context.Context, intent *nlu.IntentResult)
 		}
 		return sb.String()
 
+	case "ver_perfil":
+		mems, err := s.db.GetAllUserMemories(ctx)
+		if err != nil || len(mems) == 0 {
+			return "🧠 Minha memória permanente sobre você ainda está vazia."
+		}
+		var sb strings.Builder
+		sb.WriteString("🧠 *O Que o ATLAS Lembra Sobre Você:*\n\n")
+		for _, m := range mems {
+			sb.WriteString(fmt.Sprintf("• *%s:* %s\n", strings.Title(m.Chave), m.Valor))
+		}
+		return sb.String()
+
 	default:
 		return "Comando executado com sucesso."
 	}
@@ -553,19 +626,23 @@ func (s *Server) handleCommand(ctx context.Context, chatID int64, cmdText string
 		msg := `🤖 *ATLAS — Como Usar (Simples e Direto)*
 
 • ⚡ */hud* — Abrir painel visual de controle
-• 📖 */liturgia* — Liturgia diária católica de hoje (leituras e evangelho)
-• 📰 */noticias <tema>* — Buscar notícias recentes na internet
+• 💡 */ideias* — Ver todas as ideias e projetos registrados
+• 🔍 */ideia <id>* — Ler a suma acumulada completa de uma ideia
+• 🧠 */perfil* — Ver fatos e preferências que o ATLAS memorizou sobre você
+• 📖 */liturgia* — Liturgia diária católica completa com link
+• 📰 */noticias <tema>* — Buscar notícias recentes na internet com links
 • ⏰ */lembretes* — Ver mensagens diárias programadas
 • 🗑️ */apagar <id>* — Apagar uma programação diária (ex: /apagar 3)
-• 📅 */hoje* — Agenda de hoje com tempos de preparo e saída
-• 🎯 */metas* — Suas metas em andamento
+• 📅 */hoje* — Agenda de hoje com tempos de preparo e saída (+15%)
+• 🎯 */metas* — Suas metas e progresso
+• 📊 */tokens* — Relatório de consumo de tokens e limites
 • 🗓️ */calendario* — Link para sincronizar no Google/Apple Calendar
 
-💬 *Comandos Naturais (Texto ou Áudio):*
-Basta me mandar uma mensagem direta, por exemplo:
+💬 *Comandos Naturais (Voz ou Texto):*
+👉 _"Anotar uma ideia: criar um app de assinatura para barbeiros"_
+👉 _"Adicione à ideia anterior que o plano mensal será R$ 49"_
+👉 _"Lembre-se que eu sou desenvolvedor e acordo às 06:30"_
 👉 _"Qual é a liturgia diária de hoje?"_
-👉 _"Quais as principais notícias sobre inteligência artificial?"_
-👉 _"Resuma este link: https://..."_
 👉 _"Todo dia às 09:00 mande uma mensagem dizendo: tomar creatina"_`
 		_ = s.tg.SendMessage(ctx, chatID, msg)
 
@@ -595,7 +672,7 @@ Basta me mandar uma mensagem direta, por exemplo:
 		_ = s.tg.SendMessage(ctx, chatID, sb.String())
 
 	case "/hud", "/painel":
-		hudURL := fmt.Sprintf("%s/hud?token=%s", s.cfg.PublicURL, s.cfg.CalendarToken)
+		hudURL := fmt.Sprintf("%s/hud?token=%s", s.getPublicURL(), s.cfg.CalendarToken)
 		msg := "⚡ *ATLAS — Painel Visual (HUD)*\n\nToque no botão abaixo ou acesse pelo link direto:\n" + hudURL
 		err := s.tg.SendMessageWithWebApp(ctx, chatID, msg, "⚡ Abrir Painel HUD", hudURL)
 		if err != nil {
@@ -604,7 +681,7 @@ Basta me mandar uma mensagem direta, por exemplo:
 		}
 
 	case "/calendario", "/agenda":
-		calURL := fmt.Sprintf("%s/calendar.ics?token=%s", s.cfg.PublicURL, s.cfg.CalendarToken)
+		calURL := fmt.Sprintf("%s/calendar.ics?token=%s", s.getPublicURL(), s.cfg.CalendarToken)
 		msg := fmt.Sprintf("📅 *Sincronização de Calendário*\n\nAdicione este link no seu Google/Apple Calendar:\n`%s`", calURL)
 		_ = s.tg.SendMessage(ctx, chatID, msg)
 
@@ -720,21 +797,92 @@ Basta me mandar uma mensagem direta, por exemplo:
 		_ = s.tg.SendMessage(ctx, chatID, sb.String())
 
 	case "/ideias":
-		ideas, err := s.db.GetRecentIdeas(ctx, 5)
+		ideas, err := s.db.GetRecentIdeas(ctx, 10)
 		if err != nil || len(ideas) == 0 {
-			_ = s.tg.SendMessage(ctx, chatID, "💡 Nenhuma ideia registrada recentemente.")
+			_ = s.tg.SendMessage(ctx, chatID, "💡 Nenhuma ideia registrada ainda. Basta me contar uma ideia no chat!")
 			return
 		}
 
 		var sb strings.Builder
-		sb.WriteString("💡 *Últimas Ideias Registradas:*\n\n")
+		sb.WriteString("💡 *Suas Ideias e Projetos:*\n\n")
 		for _, i := range ideas {
-			sb.WriteString(fmt.Sprintf("• *%s*\n  📝 %s\n  ⚔️ _%s_\n\n", i.Titulo, i.Conteudo, i.QuestionamentoSocratico))
+			suma := i.SumaExecutiva
+			if suma == "" {
+				suma = i.Conteudo
+			}
+			if len(suma) > 120 {
+				suma = suma[:117] + "..."
+			}
+			sb.WriteString(fmt.Sprintf("• *[%d]* *%s*\n  📋 %s\n  _Ver completa: `/ideia %d`_\n\n", i.ID, i.Titulo, suma, i.ID))
 		}
 		_ = s.tg.SendMessage(ctx, chatID, sb.String())
 
+	case "/ideia":
+		var targetID int64
+		if len(parts) >= 2 {
+			targetID, _ = strconv.ParseInt(parts[1], 10, 64)
+		}
+		var ideia *database.Ideia
+		if targetID > 0 {
+			ideia, _ = s.db.GetIdeiaByID(ctx, targetID)
+		} else {
+			ideia, _ = s.db.GetLatestActiveIdeia(ctx)
+		}
+		if ideia == nil {
+			_ = s.tg.SendMessage(ctx, chatID, "⚠️ Ideia não encontrada. Digite `/ideias` para ver a lista.")
+			return
+		}
+
+		suma := ideia.SumaExecutiva
+		if suma == "" {
+			suma = ideia.Conteudo
+		}
+		msg := fmt.Sprintf("💡 *Ideia #%d: %s*\nStatus: _%s_ | Atualizada: %s\n\n📋 *Suma Executiva da Ideia:*\n%s\n\n📝 *Histórico de Pensamentos Anotados:*\n%s\n\n⚔️ *Provocação Socrática:*\n_%s_",
+			ideia.ID, ideia.Titulo, ideia.Status, ideia.AtualizadoEm, suma, ideia.Conteudo, ideia.QuestionamentoSocratico)
+		_ = s.tg.SendMessage(ctx, chatID, msg)
+
+	case "/perfil", "/memoria":
+		mems, err := s.db.GetAllUserMemories(ctx)
+		if err != nil || len(mems) == 0 {
+			_ = s.tg.SendMessage(ctx, chatID, "🧠 Minha memória permanente sobre você ainda está vazia.\n\nBasta me contar algo no chat, por exemplo:\n👉 _\"Lembre-se que sou desenvolvedor\"_\n👉 _\"Guarde isto: acordo todo dia às 06:30\"_")
+			return
+		}
+
+		var sb strings.Builder
+		sb.WriteString("🧠 *O Que o ATLAS Lembra Sobre Você (Memória Permanente):*\n\n")
+		for _, m := range mems {
+			sb.WriteString(fmt.Sprintf("• *%s:* %s\n", strings.Title(m.Chave), m.Valor))
+		}
+		sb.WriteString("\n_Para apagar qualquer fato: `/esquecer <chave>`_")
+		_ = s.tg.SendMessage(ctx, chatID, sb.String())
+
+	case "/esquecer":
+		if len(parts) >= 2 {
+			chave := parts[1]
+			_ = s.db.DeleteUserMemory(ctx, chave)
+			_ = s.tg.SendMessage(ctx, chatID, fmt.Sprintf("🧠 Informação sobre *'%s'* removida da memória permanente.", chave))
+			return
+		}
+		_ = s.tg.SendMessage(ctx, chatID, "Uso: `/esquecer <chave>` (ex: `/esquecer profissao`)")
+
 	case "/tokens":
-		msg := fmt.Sprintf("🛡️ *Controle Simplificado de Tokens:*\n\n• Respostas Rápidas (Groq): máx. *%d* tokens\n• Análises Pesadas (NVIDIA): máx. *%d* tokens\n• Memória de Contexto: últimas *%d* mensagens\n\n_Para alterar, basta editar as variáveis MAX_TOKENS_QUICK ou MAX_TOKENS_HEAVY no seu .env._", s.cfg.MaxTokensQuick, s.cfg.MaxTokensHeavy, s.cfg.HistoryLimit)
+		now := time.Now().In(s.cfg.Location)
+		todayStr := now.Format("2006-01-02")
+		monthStr := now.Format("2006-01")
+		stats, _ := s.db.GetTokenStats(ctx, todayStr, monthStr)
+
+		msg := fmt.Sprintf("📊 *Consumo e Limites de Tokens (ATLAS)*\n\n"+
+			"• *Hoje:* *%d* tokens\n"+
+			"• *Este Mês:* *%d* tokens\n\n"+
+			"🤖 *Por Provedor:*\n"+
+			"• Groq LPU (Rápido): *%d* tokens\n"+
+			"• NVIDIA NIM (Deep/Nemotron): *%d* tokens\n\n"+
+			"⚙️ *Limites de Segurança:*\n"+
+			"• Teto Resposta Rápida: *%d* tokens\n"+
+			"• Teto Análise Pesada: *%d* tokens\n"+
+			"• Janela de Histórico: últimas *%d* mensagens",
+			stats.TotalHoje, stats.TotalMes, stats.TotalGroq, stats.TotalNv,
+			s.cfg.MaxTokensQuick, s.cfg.MaxTokensHeavy, s.cfg.HistoryLimit)
 		_ = s.tg.SendMessage(ctx, chatID, msg)
 
 	case "/backup":

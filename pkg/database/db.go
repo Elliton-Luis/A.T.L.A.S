@@ -43,9 +43,25 @@ type Ideia struct {
 	ID                      int64
 	Titulo                  string
 	Conteudo                string
+	SumaExecutiva           string
 	QuestionamentoSocratico string
 	Status                  string
 	CriadoEm                string
+	AtualizadoEm            string
+}
+
+type MemoriaUsuario struct {
+	ID           int64
+	Chave        string
+	Valor        string
+	AtualizadoEm string
+}
+
+type TokenStats struct {
+	TotalHoje  int
+	TotalMes   int
+	TotalGroq  int
+	TotalNv    int
 }
 
 type ChatMessage struct {
@@ -160,8 +176,27 @@ func (db *DB) migrate(ctx context.Context, isRemote bool) error {
 		id INTEGER PRIMARY KEY AUTOINCREMENT,
 		titulo TEXT NOT NULL,
 		conteudo TEXT NOT NULL,
+		suma_executiva TEXT NOT NULL DEFAULT '',
 		questionamento_socratico TEXT,
 		status TEXT CHECK(status IN ('bruta', 'refinada', 'descartada', 'em_execucao')) DEFAULT 'bruta',
+		criado_em DATETIME DEFAULT CURRENT_TIMESTAMP,
+		atualizado_em DATETIME DEFAULT CURRENT_TIMESTAMP
+	);
+
+	CREATE TABLE IF NOT EXISTS memoria_usuario (
+		id INTEGER PRIMARY KEY AUTOINCREMENT,
+		chave TEXT UNIQUE NOT NULL,
+		valor TEXT NOT NULL,
+		atualizado_em DATETIME DEFAULT CURRENT_TIMESTAMP
+	);
+
+	CREATE TABLE IF NOT EXISTS uso_tokens (
+		id INTEGER PRIMARY KEY AUTOINCREMENT,
+		provedor TEXT NOT NULL,
+		modelo TEXT NOT NULL,
+		tokens_entrada INTEGER DEFAULT 0,
+		tokens_saida INTEGER DEFAULT 0,
+		total_tokens INTEGER DEFAULT 0,
 		criado_em DATETIME DEFAULT CURRENT_TIMESTAMP
 	);
 
@@ -196,6 +231,10 @@ func (db *DB) migrate(ctx context.Context, isRemote bool) error {
 	if _, err := db.ExecContext(ctx, schema); err != nil {
 		return err
 	}
+
+	// Safe column additions for existing tables
+	_, _ = db.ExecContext(ctx, "ALTER TABLE ideias ADD COLUMN suma_executiva TEXT NOT NULL DEFAULT '';")
+	_, _ = db.ExecContext(ctx, "ALTER TABLE ideias ADD COLUMN atualizado_em DATETIME DEFAULT CURRENT_TIMESTAMP;")
 
 	// Seed default routines if table is empty
 	var count int
@@ -262,16 +301,68 @@ func (db *DB) InsertEvento(ctx context.Context, desc, officialTime, b1, b2 strin
 	return res.LastInsertId()
 }
 
-// InsertIdeia saves an idea with socratic questioning.
-func (db *DB) InsertIdeia(ctx context.Context, titulo, conteudo, socraticQuestion string) (int64, error) {
+// InsertIdeia saves an idea with socratic questioning and executive summary.
+func (db *DB) InsertIdeia(ctx context.Context, titulo, conteudo, suma, socraticQuestion string) (int64, error) {
+	if suma == "" {
+		suma = conteudo
+	}
 	res, err := db.ExecContext(ctx, `
-		INSERT INTO ideias (titulo, conteudo, questionamento_socratico)
-		VALUES (?, ?, ?)
-	`, titulo, conteudo, socraticQuestion)
+		INSERT INTO ideias (titulo, conteudo, suma_executiva, questionamento_socratico)
+		VALUES (?, ?, ?, ?)
+	`, titulo, conteudo, suma, socraticQuestion)
 	if err != nil {
 		return 0, err
 	}
 	return res.LastInsertId()
+}
+
+// AppendToIdeia concatenates a new thought bullet and updates the accumulated executive summary.
+func (db *DB) AppendToIdeia(ctx context.Context, id int64, novoPonto, novaSuma string) error {
+	var currentConteudo string
+	_ = db.QueryRowContext(ctx, "SELECT conteudo FROM ideias WHERE id = ?", id).Scan(&currentConteudo)
+
+	updatedConteudo := currentConteudo
+	if updatedConteudo != "" {
+		updatedConteudo += "\n"
+	}
+	updatedConteudo += "• " + novoPonto
+
+	_, err := db.ExecContext(ctx, `
+		UPDATE ideias
+		SET conteudo = ?, suma_executiva = ?, atualizado_em = CURRENT_TIMESTAMP
+		WHERE id = ?
+	`, updatedConteudo, novaSuma, id)
+	return err
+}
+
+// GetLatestActiveIdeia returns the most recently updated idea.
+func (db *DB) GetLatestActiveIdeia(ctx context.Context) (*Ideia, error) {
+	row := db.QueryRowContext(ctx, `
+		SELECT id, titulo, conteudo, COALESCE(suma_executiva, ''), questionamento_socratico, status, criado_em, COALESCE(atualizado_em, criado_em)
+		FROM ideias
+		WHERE status != 'descartada'
+		ORDER BY id DESC
+		LIMIT 1
+	`)
+	var i Ideia
+	if err := row.Scan(&i.ID, &i.Titulo, &i.Conteudo, &i.SumaExecutiva, &i.QuestionamentoSocratico, &i.Status, &i.CriadoEm, &i.AtualizadoEm); err != nil {
+		return nil, err
+	}
+	return &i, nil
+}
+
+// GetIdeiaByID returns an idea by its numeric ID.
+func (db *DB) GetIdeiaByID(ctx context.Context, id int64) (*Ideia, error) {
+	row := db.QueryRowContext(ctx, `
+		SELECT id, titulo, conteudo, COALESCE(suma_executiva, ''), questionamento_socratico, status, criado_em, COALESCE(atualizado_em, criado_em)
+		FROM ideias
+		WHERE id = ?
+	`, id)
+	var i Ideia
+	if err := row.Scan(&i.ID, &i.Titulo, &i.Conteudo, &i.SumaExecutiva, &i.QuestionamentoSocratico, &i.Status, &i.CriadoEm, &i.AtualizadoEm); err != nil {
+		return nil, err
+	}
+	return &i, nil
 }
 
 // InsertObjetivo saves a goal.
@@ -463,7 +554,7 @@ func (db *DB) GetActiveGoals(ctx context.Context, limit int) ([]Objetivo, error)
 // GetRecentIdeas returns recent ideas.
 func (db *DB) GetRecentIdeas(ctx context.Context, limit int) ([]Ideia, error) {
 	rows, err := db.QueryContext(ctx, `
-		SELECT id, titulo, conteudo, questionamento_socratico, status, criado_em
+		SELECT id, titulo, conteudo, COALESCE(suma_executiva, ''), questionamento_socratico, status, criado_em, COALESCE(atualizado_em, criado_em)
 		FROM ideias
 		ORDER BY id DESC
 		LIMIT ?
@@ -476,12 +567,105 @@ func (db *DB) GetRecentIdeas(ctx context.Context, limit int) ([]Ideia, error) {
 	var list []Ideia
 	for rows.Next() {
 		var i Ideia
-		if err := rows.Scan(&i.ID, &i.Titulo, &i.Conteudo, &i.QuestionamentoSocratico, &i.Status, &i.CriadoEm); err != nil {
+		if err := rows.Scan(&i.ID, &i.Titulo, &i.Conteudo, &i.SumaExecutiva, &i.QuestionamentoSocratico, &i.Status, &i.CriadoEm, &i.AtualizadoEm); err != nil {
 			return nil, err
 		}
 		list = append(list, i)
 	}
 	return list, nil
+}
+
+// SaveUserMemory persists a fact or preference about the user into long-term memory.
+func (db *DB) SaveUserMemory(ctx context.Context, chave, valor string) error {
+	chave = strings.ToLower(strings.TrimSpace(chave))
+	valor = strings.TrimSpace(valor)
+	if chave == "" || valor == "" {
+		return fmt.Errorf("chave e valor de memoria nao podem ser vazios")
+	}
+
+	_, err := db.ExecContext(ctx, `
+		INSERT INTO memoria_usuario (chave, valor, atualizado_em)
+		VALUES (?, ?, CURRENT_TIMESTAMP)
+		ON CONFLICT(chave) DO UPDATE SET valor = excluded.valor, atualizado_em = CURRENT_TIMESTAMP
+	`, chave, valor)
+	return err
+}
+
+// GetAllUserMemories returns all stored facts about the user.
+func (db *DB) GetAllUserMemories(ctx context.Context) ([]MemoriaUsuario, error) {
+	rows, err := db.QueryContext(ctx, `
+		SELECT id, chave, valor, atualizado_em
+		FROM memoria_usuario
+		ORDER BY chave ASC
+	`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var list []MemoriaUsuario
+	for rows.Next() {
+		var m MemoriaUsuario
+		if err := rows.Scan(&m.ID, &m.Chave, &m.Valor, &m.AtualizadoEm); err != nil {
+			return nil, err
+		}
+		list = append(list, m)
+	}
+	return list, nil
+}
+
+// DeleteUserMemory removes a stored memory key.
+func (db *DB) DeleteUserMemory(ctx context.Context, chave string) error {
+	chave = strings.ToLower(strings.TrimSpace(chave))
+	_, err := db.ExecContext(ctx, "DELETE FROM memoria_usuario WHERE chave = ?", chave)
+	return err
+}
+
+// RecordTokenUsage logs tokens consumed by a request.
+func (db *DB) RecordTokenUsage(ctx context.Context, provedor, modelo string, inTok, outTok, totalTok int) error {
+	if totalTok <= 0 {
+		totalTok = inTok + outTok
+	}
+	_, err := db.ExecContext(ctx, `
+		INSERT INTO uso_tokens (provedor, modelo, tokens_entrada, tokens_saida, total_tokens)
+		VALUES (?, ?, ?, ?, ?)
+	`, provedor, modelo, inTok, outTok, totalTok)
+	return err
+}
+
+// GetTokenStats calculates token consumption for today, this month, and per provider.
+func (db *DB) GetTokenStats(ctx context.Context, todayStr, monthStr string) (*TokenStats, error) {
+	stats := &TokenStats{}
+
+	// Total today
+	_ = db.QueryRowContext(ctx, `
+		SELECT COALESCE(SUM(total_tokens), 0)
+		FROM uso_tokens
+		WHERE DATE(criado_em) = DATE(?)
+	`, todayStr).Scan(&stats.TotalHoje)
+
+	// Total this month
+	_ = db.QueryRowContext(ctx, `
+		SELECT COALESCE(SUM(total_tokens), 0)
+		FROM uso_tokens
+		WHERE strftime('%Y-%m', criado_em) = ?
+	`, monthStr).Scan(&stats.TotalMes)
+
+	// Groq total
+	_ = db.QueryRowContext(ctx, `
+		SELECT COALESCE(SUM(total_tokens), 0)
+		FROM uso_tokens
+		WHERE provedor = 'groq'
+	`).Scan(&stats.TotalGroq)
+
+	// NVIDIA total
+	_ = db.QueryRowContext(ctx, `
+		SELECT COALESCE(SUM(total_tokens), 0)
+		FROM uso_tokens
+		WHERE provedor = 'nvidia'
+	`).Scan(&stats.TotalNv)
+
+	return stats, nil
 }
 
 // GetPendingBuffer1Events returns events whose prep time has arrived and not yet notified.

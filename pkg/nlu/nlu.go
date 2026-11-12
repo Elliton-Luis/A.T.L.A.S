@@ -26,7 +26,7 @@ type Client struct {
 }
 
 type IntentResult struct {
-	Tipo                      string `json:"tipo"`           // acao, evento, ideia, objetivo, lembrete_diario, conversa
+	Tipo                      string `json:"tipo"`           // acao, evento, ideia, adicionar_ideia, lembrar_fato, esquecer_fato, objetivo, lembrete_diario, conversa
 	Acao                      string `json:"acao,omitempty"` // apagar_rotina, alterar_rotina, toggle_rotina, concluir_evento, apagar_evento, atualizar_meta, fazer_backup, listar_agenda, listar_lembretes
 	ID                        int64  `json:"id,omitempty"`
 	Termo                     string `json:"termo,omitempty"`
@@ -34,7 +34,10 @@ type IntentResult struct {
 	Complexidade              string `json:"complexidade,omitempty"` // "simples" ou "pesada"
 	Titulo                    string `json:"titulo,omitempty"`
 	Conteudo                  string `json:"conteudo,omitempty"`
+	SumaIdeia                 string `json:"suma_ideia,omitempty"`
 	PerguntaSocratica         string `json:"pergunta_socratica,omitempty"`
+	ChaveMemoria              string `json:"chave_memoria,omitempty"`
+	ValorMemoria              string `json:"valor_memoria,omitempty"`
 	Descricao                 string `json:"descricao,omitempty"`
 	HorarioOficial            string `json:"horario_oficial,omitempty"`
 	EstimativaDeslocamentoMin int    `json:"estimativa_deslocamento_min,omitempty"`
@@ -45,6 +48,13 @@ type IntentResult struct {
 	Nome                      string `json:"nome,omitempty"`
 	Mensagem                  string `json:"mensagem,omitempty"`
 	URL                       string `json:"url,omitempty"`
+
+	// Token usage telemetry
+	PromptTokens     int `json:"-"`
+	CompletionTokens int `json:"-"`
+	TotalTokens      int `json:"-"`
+	ProvedorUsado    string `json:"-"`
+	ModeloUsado      string `json:"-"`
 }
 
 var Curiosidades = []string{
@@ -84,6 +94,20 @@ type ChatCompletionResponse struct {
 			Content string `json:"content"`
 		} `json:"message"`
 	} `json:"choices"`
+	Usage struct {
+		PromptTokens     int `json:"prompt_tokens"`
+		CompletionTokens int `json:"completion_tokens"`
+		TotalTokens      int `json:"total_tokens"`
+	} `json:"usage"`
+}
+
+type APIResponse struct {
+	Text         string
+	Provider     string
+	Model        string
+	PromptTokens int
+	ComplTokens  int
+	TotalTokens  int
 }
 
 func NewClient(groqKeys, nvidiaKeys, nvidiaModel string, maxTokensQuick, maxTokensHeavy int) *Client {
@@ -153,14 +177,27 @@ func SanitizeHumanResponse(s string) string {
 	return strings.TrimSpace(s)
 }
 
-// ParseIntent sends the user's message along with sliding history to NLU (Groq LPU ultra-fast / NVIDIA fallback).
-func (c *Client) ParseIntent(ctx context.Context, text, currentDatetime string, history []database.ChatMessage) (*IntentResult, error) {
+// ParseIntent sends the user's message along with sliding history and long-term memory to NLU.
+func (c *Client) ParseIntent(ctx context.Context, text, currentDatetime string, history []database.ChatMessage, userMemories []database.MemoriaUsuario, latestIdeia *database.Ideia) (*IntentResult, error) {
 	if c.groqPool.IsEmpty() && c.nvidiaPool.IsEmpty() {
 		return nil, fmt.Errorf("nenhuma chave de IA (Groq ou NVIDIA) configurada")
 	}
 
+	var memSb strings.Builder
+	if len(userMemories) > 0 {
+		memSb.WriteString("\n\nPERFIL E MEMÓRIAS PERMANENTES DO USUÁRIO (USE SEMPRE ESTE CONTEXTO PARA PERSONALIZAR):\n")
+		for _, m := range userMemories {
+			memSb.WriteString(fmt.Sprintf("- %s: %s\n", m.Chave, m.Valor))
+		}
+	}
+
+	var ideiaSb strings.Builder
+	if latestIdeia != nil {
+		ideiaSb.WriteString(fmt.Sprintf("\n\nÚLTIMA IDEIA EM DESENVOLVIMENTO (ID %d - '%s'):\nSuma atual:\n%s\nSe o usuário estiver trazendo mais argumentos, detalhes ou complementos a essa ideia, use 'tipo': 'adicionar_ideia'.\n", latestIdeia.ID, latestIdeia.Titulo, latestIdeia.SumaExecutiva))
+	}
+
 	systemPrompt := fmt.Sprintf(`Você é o ATLAS: assistente pessoal executivo de alto nível, inspirado no JARVIS.
-Horário atual de referência: %s.
+Horário atual de referência: %s.%s%s
 
 SEUS ALGORITMOS E CAPACIDADES INTERNAS (REAIS):
 1. Algoritmo Anti-Atraso (Margem Determinística de +15%%):
@@ -171,35 +208,57 @@ SEUS ALGORITMOS E CAPACIDADES INTERNAS (REAIS):
    - Notificações automáticas nos minutos exatos dos Buffers de saída e preparo.
    - Disparo pontual de rotinas diárias e lembretes programados.
 3. Auditoria Pós-Evento:
-   - 15 minutos após o encerramento previsto de um compromisso, pergunta educadamente se foi concluído ou se precisa de reagendamento.
+   - 15 minutos após o encerramento previsto de um compromisso, pergunta educadamente se foi concluído.
 4. Sincronização de Calendário Universal (RFC 5545 iCal):
    - Gera feeds .ics seguros com alarmes sonoros embutidos (VALARM) para Google Calendar, Apple e Android.
 5. Painel HUD Visual Integrado (Telegram WebApp):
-   - Interface terminal escura autenticada com HMAC-SHA256 para controle de rotinas, metas e agenda.
-6. Memória Contextual com Janela Deslizante:
-   - Histórico contínuo armazenado localmente em SQLite (WAL mode) para diálogo fluido sem amnésia.
+   - Interface terminal escura para controle de rotinas, metas e agenda.
+6. Memória Permanente e Perfil:
+   - Armazena fatos, profissão, rotinas e preferências do usuário para nunca esquecer quem ele é.
+7. Gestão de Ideias Contínua com Suma Acumulada:
+   - Toda vez que o usuário traz uma ideia ou adiciona pensamentos, concatena o resumo fiel e mantém uma Suma Executiva estruturada sempre atualizada.
 
 PERSONALIDADE (ESTILO JARVIS):
 - Calmo, sofisticado, sóbrio, educado, altamente competente e respeitoso.
-- JAMAIS seja grosseiro, arrogante, sarcástico, pedante ou combativo. Não use frases agressivas como "a inércia é seu inimigo" nem mande o usuário "parar de perguntar".
-- Em dúvidas sobre você ou seus recursos: explique com precisão cirúrgica e elegância os algoritmos e funções que você opera.
-- Em tarefas cotidianas (lembretes, horários, rotinas, tarefas): responda com eficiência e clareza.
-- Em ideias, planos ou reflexões (MÉTODO SOCRÁTICO): atue como um conselheiro estratégico experiente. Valide a ideia e levante com polidez um ponto cego real, risco operacional ou custo de oportunidade com uma pergunta inteligente para aperfeiçoar o plano.
-- Extração de Texto: ao receber mensagens encaminhadas ou artigos, sintetize com clareza o cerne da mensagem de forma limpa.
+- JAMAIS seja grosseiro, arrogante, sarcástico ou combativo.
+- Em ideias, planos ou reflexões (MÉTODO SOCRÁTICO): atue como um conselheiro estratégico experiente. Valide a ideia, gere a suma executiva e levante com polidez um ponto cego real ou custo de oportunidade com uma pergunta inteligente.
 
-Classifique a intenção estritamente em uma das opções abaixo e responda EXCLUSIVAMENTE em formato JSON puro.
-Indique sempre "complexidade": "pesada" se a solicitação for uma pesquisa aprofundada, análise estratégica complexa ou redação longa de projeto. Para todo o resto, use "complexidade": "simples":
+Classifique a intenção estritamente em uma das opções abaixo e responda EXCLUSIVAMENTE em formato JSON puro:
 
-1. Para ideias, pensamentos, projetos ou planos:
+1. Para NOVA ideia, pensamento ou projeto (ou se disser "anotar uma ideia", "tive uma ideia"):
 {
   "tipo": "ideia",
   "complexidade": "simples" ou "pesada",
-  "titulo": "Título conciso da ideia",
-  "conteudo": "A essência da ideia",
-  "pergunta_socratica": "Pergunta estratégica e reflexiva que aponta um ponto cego, risco ou aspecto a ser considerado para aperfeiçoar o plano"
+  "titulo": "Título curto da ideia",
+  "conteudo": "Resumo fiel e exato do que o usuário disse",
+  "suma_ideia": "Suma executiva estruturada e clara da ideia em tópicos",
+  "pergunta_socratica": "Pergunta reflexiva apontando ponto cego ou risco estratégico"
 }
 
-2. Para compromissos / eventos na agenda:
+2. Para CONTINUAÇÃO ou COMPLEMENTO de uma ideia já discutida (ex: "adicione à ideia", "mais um ponto", "anote também que..."):
+{
+  "tipo": "adicionar_ideia",
+  "id": 0,
+  "conteudo": "Resumo exato do novo ponto adicionado",
+  "suma_ideia": "Nova suma executiva acumulada integrando todos os pontos anteriores com o novo ponto",
+  "pergunta_socratica": "Novo questionamento estratégico sobre o plano atualizado"
+}
+
+3. Para GUARDAR UM FATO OU INFORMAÇÃO SOBRE O USUÁRIO (ex: "sou programador", "acordo às 6h", "minha meta é faturar 10k", "não como carne", "lembre-se que..."):
+{
+  "tipo": "lembrar_fato",
+  "chave_memoria": "palavra_chave_curta (ex: profissao, rotina_sono, alimentacao, cidade, meta_financeira)",
+  "valor_memoria": "O fato ou informação exata a ser lembrada",
+  "resposta": "Confirmação respeitosa de que o fato foi gravado em sua memória permanente"
+}
+
+4. Para ESQUECER UM FATO gravado:
+{
+  "tipo": "esquecer_fato",
+  "chave_memoria": "palavra_chave_a_remover"
+}
+
+5. Para compromissos / eventos na agenda:
 {
   "tipo": "evento",
   "complexidade": "simples",
@@ -209,7 +268,7 @@ Indique sempre "complexidade": "pesada" se a solicitação for uma pesquisa apro
   "estimativa_preparo_min": 35
 }
 
-3. Para metas e objetivos:
+6. Para metas e objetivos:
 {
   "tipo": "objetivo",
   "complexidade": "simples",
@@ -217,7 +276,7 @@ Indique sempre "complexidade": "pesada" se a solicitação for uma pesquisa apro
   "prazo": "YYYY-MM-DD HH:MM:SS" ou ""
 }
 
-4. Para lembretes diários recorrentes ou programação de rotinas (ex: "todo dia às 09:00 mande uma mensagem dizendo...", "me lembre todo dia às 20:00 de..."):
+7. Para lembretes diários recorrentes (ex: "todo dia às 09:00 mande uma mensagem..."):
 {
   "tipo": "lembrete_diario",
   "complexidade": "simples",
@@ -225,24 +284,24 @@ Indique sempre "complexidade": "pesada" se a solicitação for uma pesquisa apro
   "mensagem": "Mensagem exata a ser disparada todo dia"
 }
 
-5. Para ações do aplicativo e buscas na internet (apagar/alterar lembretes, concluir eventos, liturgia diária, notícias, resumir links):
+8. Para ações do app e buscas na web (liturgia, noticias, resumir_link, apagar_rotina, listar_agenda, listar_lembretes, etc.):
 {
   "tipo": "acao",
-  "acao": "liturgia" ou "noticias" ou "resumir_link" ou "apagar_rotina" ou "alterar_rotina" ou "toggle_rotina" ou "concluir_evento" ou "apagar_evento" ou "atualizar_meta" ou "fazer_backup" ou "listar_agenda" ou "listar_lembretes",
-  "id": 0 (ou o número do ID se mencionado),
-  "termo": "palavra-chave (ex: tema da notícia 'inteligência artificial', ou da meta/lembrete/evento)",
-  "url": "https://..." (se o usuário forneceu um link para ler/resumir),
-  "horario": "HH:MM" (se for alterar horário),
-  "progresso": 80 (número de 0 a 100 se for atualizar meta)
+  "acao": "liturgia" ou "noticias" ou "resumir_link" ou "apagar_rotina" ou "alterar_rotina" ou "toggle_rotina" ou "concluir_evento" ou "apagar_evento" ou "atualizar_meta" ou "fazer_backup" ou "listar_agenda" ou "listar_lembretes" ou "ver_perfil",
+  "id": 0,
+  "termo": "palavra-chave",
+  "url": "https://...",
+  "horario": "HH:MM",
+  "progresso": 80
 }
 
-6. Para conversa, reflexão ou debate geral (ou perguntas sobre o que você faz):
+9. Para conversa, reflexão ou debate geral:
 {
   "tipo": "conversa",
   "complexidade": "simples" ou "pesada",
-  "resposta": "Sua resposta equilibrada, polida, inteligente e perspicaz"
+  "resposta": "Sua resposta equilibrada, polida e perspicaz"
 }
-`, currentDatetime)
+`, currentDatetime, memSb.String(), ideiaSb.String())
 
 	messages := []ChatMessagePayload{
 		{Role: "system", Content: systemPrompt},
@@ -266,29 +325,44 @@ Indique sempre "complexidade": "pesada" se a solicitação for uma pesquisa apro
 		MaxTokens:   c.maxTokensQuick,
 	}
 
-	rawResp, err := c.doRequest(ctx, reqPayload)
+	apiRes, err := c.doRequest(ctx, reqPayload)
 	if err != nil {
 		return nil, err
 	}
 
+	rawResp := apiRes.Text
 	match := jsonBlockRegex.FindString(rawResp)
 	if match == "" {
-		// Fallback as general conversation
 		return &IntentResult{
-			Tipo:     "conversa",
-			Resposta: SanitizeHumanResponse(rawResp),
+			Tipo:             "conversa",
+			Resposta:         SanitizeHumanResponse(rawResp),
+			PromptTokens:     apiRes.PromptTokens,
+			CompletionTokens: apiRes.ComplTokens,
+			TotalTokens:      apiRes.TotalTokens,
+			ProvedorUsado:    apiRes.Provider,
+			ModeloUsado:      apiRes.Model,
 		}, nil
 	}
 
 	var res IntentResult
 	if err := json.Unmarshal([]byte(match), &res); err != nil {
 		return &IntentResult{
-			Tipo:     "conversa",
-			Resposta: SanitizeHumanResponse(rawResp),
+			Tipo:             "conversa",
+			Resposta:         SanitizeHumanResponse(rawResp),
+			PromptTokens:     apiRes.PromptTokens,
+			CompletionTokens: apiRes.ComplTokens,
+			TotalTokens:      apiRes.TotalTokens,
+			ProvedorUsado:    apiRes.Provider,
+			ModeloUsado:      apiRes.Model,
 		}, nil
 	}
 
 	res.Resposta = SanitizeHumanResponse(res.Resposta)
+	res.PromptTokens = apiRes.PromptTokens
+	res.CompletionTokens = apiRes.ComplTokens
+	res.TotalTokens = apiRes.TotalTokens
+	res.ProvedorUsado = apiRes.Provider
+	res.ModeloUsado = apiRes.Model
 	return &res, nil
 }
 
@@ -314,7 +388,11 @@ Diretrizes:
 		MaxTokens:   350,
 	}
 
-	return c.doRequest(ctx, reqPayload)
+	res, err := c.doRequest(ctx, reqPayload)
+	if err != nil {
+		return "", err
+	}
+	return res.Text, nil
 }
 
 // GenerateReview generates a calm, insightful evening review.
@@ -335,11 +413,15 @@ Gere um balanço do dia:
 		MaxTokens:   350,
 	}
 
-	return c.doRequest(ctx, reqPayload)
+	res, err := c.doRequest(ctx, reqPayload)
+	if err != nil {
+		return "", err
+	}
+	return res.Text, nil
 }
 
-// DeepAnalyze delegates heavy research, complex analysis or strategic evaluations to NVIDIA NIM (90B).
-func (c *Client) DeepAnalyze(ctx context.Context, text string, history []database.ChatMessage) (string, error) {
+// DeepAnalyze delegates heavy research, complex analysis or strategic evaluations to NVIDIA NIM.
+func (c *Client) DeepAnalyze(ctx context.Context, text string, history []database.ChatMessage) (*APIResponse, error) {
 	systemPrompt := `Você é o ATLAS: assistente executivo e estrategista de alto nível estilo JARVIS.
 Você foi acionado para uma análise aprofundada, pesquisa ou raciocínio complexo.
 Responda com extrema sofisticação, profundidade analítica, clareza cirúrgica e elegância, apontando dados, riscos, custos de oportunidade e passos recomendados.`
@@ -362,7 +444,7 @@ Responda com extrema sofisticação, profundidade analítica, clareza cirúrgica
 	// 1. Tenta NVIDIA NIM com rotação e fallback no pool de chaves
 	if !c.nvidiaPool.IsEmpty() {
 		res, err := c.executePoolAPI(ctx, "https://integrate.api.nvidia.com/v1/chat/completions", c.nvidiaPool, payload)
-		if err == nil && res != "" {
+		if err == nil && res != nil {
 			return res, nil
 		}
 	}
@@ -373,16 +455,16 @@ Responda com extrema sofisticação, profundidade analítica, clareza cirúrgica
 		return c.executePoolAPI(ctx, "https://api.groq.com/openai/v1/chat/completions", c.groqPool, payload)
 	}
 
-	return "", fmt.Errorf("nenhum provedor de IA disponível para análise profunda")
+	return nil, fmt.Errorf("nenhum provedor de IA disponível para análise profunda")
 }
 
-func (c *Client) doRequest(ctx context.Context, payload ChatCompletionRequest) (string, error) {
+func (c *Client) doRequest(ctx context.Context, payload ChatCompletionRequest) (*APIResponse, error) {
 	// 1. Tenta Groq primeiro (velocidade relâmpago de ~0.3s) com pool de chaves
 	if !c.groqPool.IsEmpty() {
 		groqPayload := payload
 		groqPayload.Model = c.groqModel
 		res, err := c.executePoolAPI(ctx, "https://api.groq.com/openai/v1/chat/completions", c.groqPool, groqPayload)
-		if err == nil && res != "" {
+		if err == nil && res != nil {
 			return res, nil
 		}
 	}
@@ -394,12 +476,12 @@ func (c *Client) doRequest(ctx context.Context, payload ChatCompletionRequest) (
 		return c.executePoolAPI(ctx, "https://integrate.api.nvidia.com/v1/chat/completions", c.nvidiaPool, nvidiaPayload)
 	}
 
-	return "", fmt.Errorf("nenhum provedor de IA (Groq ou NVIDIA) configurado com sucesso")
+	return nil, fmt.Errorf("nenhum provedor de IA (Groq ou NVIDIA) configurado com sucesso")
 }
 
-func (c *Client) executePoolAPI(ctx context.Context, url string, keyPool *pool.KeyPool, payload ChatCompletionRequest) (string, error) {
+func (c *Client) executePoolAPI(ctx context.Context, url string, keyPool *pool.KeyPool, payload ChatCompletionRequest) (*APIResponse, error) {
 	if keyPool.IsEmpty() {
-		return "", fmt.Errorf("nenhuma chave disponível para %s", url)
+		return nil, fmt.Errorf("nenhuma chave disponível para %s", url)
 	}
 
 	keys := keyPool.OrderedKeys()
@@ -407,24 +489,24 @@ func (c *Client) executePoolAPI(ctx context.Context, url string, keyPool *pool.K
 
 	for _, key := range keys {
 		res, err := c.executeAPI(ctx, url, key, payload)
-		if err == nil && res != "" {
+		if err == nil && res != nil {
 			return res, nil
 		}
 		lastErr = err
 	}
 
-	return "", lastErr
+	return nil, lastErr
 }
 
-func (c *Client) executeAPI(ctx context.Context, url, apiKey string, payload ChatCompletionRequest) (string, error) {
+func (c *Client) executeAPI(ctx context.Context, url, apiKey string, payload ChatCompletionRequest) (*APIResponse, error) {
 	body, err := json.Marshal(payload)
 	if err != nil {
-		return "", fmt.Errorf("marshal request: %w", err)
+		return nil, fmt.Errorf("marshal request: %w", err)
 	}
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(body))
 	if err != nil {
-		return "", fmt.Errorf("create req: %w", err)
+		return nil, fmt.Errorf("create req: %w", err)
 	}
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Authorization", "Bearer "+apiKey)
@@ -432,23 +514,35 @@ func (c *Client) executeAPI(ctx context.Context, url, apiKey string, payload Cha
 
 	resp, err := c.httpClient.Do(req)
 	if err != nil {
-		return "", fmt.Errorf("do req to %s: %w", url, err)
+		return nil, fmt.Errorf("do req to %s: %w", url, err)
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
 		respBody, _ := io.ReadAll(resp.Body)
-		return "", fmt.Errorf("api status %d: %s", resp.StatusCode, string(respBody))
+		return nil, fmt.Errorf("api status %d: %s", resp.StatusCode, string(respBody))
 	}
 
 	var res ChatCompletionResponse
 	if err := json.NewDecoder(resp.Body).Decode(&res); err != nil {
-		return "", fmt.Errorf("decode response: %w", err)
+		return nil, fmt.Errorf("decode response: %w", err)
 	}
 
 	if len(res.Choices) == 0 {
-		return "", fmt.Errorf("api returned 0 choices")
+		return nil, fmt.Errorf("api returned 0 choices")
 	}
 
-	return strings.TrimSpace(res.Choices[0].Message.Content), nil
+	provider := "groq"
+	if strings.Contains(url, "nvidia") {
+		provider = "nvidia"
+	}
+
+	return &APIResponse{
+		Text:         strings.TrimSpace(res.Choices[0].Message.Content),
+		Provider:     provider,
+		Model:        payload.Model,
+		PromptTokens: res.Usage.PromptTokens,
+		ComplTokens:  res.Usage.CompletionTokens,
+		TotalTokens:  res.Usage.TotalTokens,
+	}, nil
 }

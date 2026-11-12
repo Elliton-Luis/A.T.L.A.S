@@ -73,4 +73,41 @@ func TestDatabaseMigrationAndOperations(t *testing.T) {
 	if events[0].Descricao != "Reunião de Diretoria" {
 		t.Fatalf("unexpected event description: %s", events[0].Descricao)
 	}
+
+	// 5. Test Ideas with Continuous Suma
+	idID, err := db.InsertIdeia(ctx, "SaaS Barbeiros", "Plano mensal de R$ 49", "Plano mensal R$ 49 para barbearias", "Qual o custo de aquisição?")
+	if err != nil {
+		t.Fatalf("InsertIdeia failed: %v", err)
+	}
+	if err := db.AppendToIdeia(ctx, idID, "Adicionar módulo de agendamento por WhatsApp", "Plano R$ 49 + módulo WhatsApp"); err != nil {
+		t.Fatalf("AppendToIdeia failed: %v", err)
+	}
+	latestIdea, err := db.GetLatestActiveIdeia(ctx)
+	if err != nil || latestIdea == nil {
+		t.Fatalf("GetLatestActiveIdeia failed: %v", err)
+	}
+	if latestIdea.SumaExecutiva != "Plano R$ 49 + módulo WhatsApp" {
+		t.Errorf("expected updated suma, got %s", latestIdea.SumaExecutiva)
+	}
+
+	// 6. Test User Memory
+	if err := db.SaveUserMemory(ctx, "profissao", "Engenheiro de Software"); err != nil {
+		t.Fatalf("SaveUserMemory failed: %v", err)
+	}
+	mems, err := db.GetAllUserMemories(ctx)
+	if err != nil || len(mems) != 1 {
+		t.Fatalf("expected 1 memory, got %d", len(mems))
+	}
+	if mems[0].Chave != "profissao" || mems[0].Valor != "Engenheiro de Software" {
+		t.Errorf("unexpected memory: %v", mems[0])
+	}
+
+	// 7. Test Token Telemetry
+	if err := db.RecordTokenUsage(ctx, "groq", "qwen", 50, 20, 70); err != nil {
+		t.Fatalf("RecordTokenUsage failed: %v", err)
+	}
+	stats, err := db.GetTokenStats(ctx, "2026-11-12", "2026-11")
+	if err != nil || stats.TotalGroq != 70 {
+		t.Errorf("expected 70 groq tokens, got %v", stats)
+	}
 }

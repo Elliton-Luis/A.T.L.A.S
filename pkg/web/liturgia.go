@@ -64,15 +64,22 @@ func FetchLiturgiaDiaria(ctx context.Context) (string, error) {
 	// 1ª Leitura
 	if data.PrimeiraLeitura.Referencia != "" {
 		sb.WriteString(fmt.Sprintf("📜 *1ª Leitura (%s)*\n", data.PrimeiraLeitura.Referencia))
-		trecho := trimText(data.PrimeiraLeitura.Texto, 280)
-		sb.WriteString(fmt.Sprintf("_%s_\n\n", trecho))
+		if data.PrimeiraLeitura.Titulo != "" {
+			sb.WriteString(fmt.Sprintf("*%s*\n", data.PrimeiraLeitura.Titulo))
+		}
+		sb.WriteString(fmt.Sprintf("%s\n\n", strings.TrimSpace(data.PrimeiraLeitura.Texto)))
 	}
 
 	// Salmo
 	if data.Salmo.Referencia != "" {
 		sb.WriteString(fmt.Sprintf("🎵 *Salmo Responsorial (%s)*\n", data.Salmo.Referencia))
 		if data.Salmo.Refrao != "" {
-			sb.WriteString(fmt.Sprintf("👉 *R:* %s\n\n", data.Salmo.Refrao))
+			sb.WriteString(fmt.Sprintf("👉 *R:* %s\n", data.Salmo.Refrao))
+		}
+		if data.Salmo.Texto != "" {
+			sb.WriteString(fmt.Sprintf("_%s_\n\n", strings.TrimSpace(data.Salmo.Texto)))
+		} else {
+			sb.WriteString("\n")
 		}
 	}
 
@@ -82,11 +89,18 @@ func FetchLiturgiaDiaria(ctx context.Context) (string, error) {
 		if data.Evangelho.Titulo != "" {
 			sb.WriteString(fmt.Sprintf("*%s*\n", data.Evangelho.Titulo))
 		}
-		trecho := trimText(data.Evangelho.Texto, 350)
-		sb.WriteString(fmt.Sprintf("\"%s\"", trecho))
+		sb.WriteString(fmt.Sprintf("%s\n\n", strings.TrimSpace(data.Evangelho.Texto)))
 	}
 
-	return sb.String(), nil
+	sb.WriteString("🔗 [Acessar Liturgia Completa no Portal Canção Nova](https://liturgia.cancaonova.com/)")
+
+	fullText := sb.String()
+	// Telegram hard limit is 4096 chars. If liturgy exceeds it on long solemnities, trim safely.
+	if len(fullText) > 4000 {
+		fullText = fullText[:3950] + "\n\n...\n🔗 [Continuar lendo na íntegra no Portal Canção Nova](https://liturgia.cancaonova.com/)"
+	}
+
+	return fullText, nil
 }
 
 func trimText(s string, maxChars int) string {
