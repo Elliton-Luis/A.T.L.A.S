@@ -201,6 +201,62 @@ func TestClearAllEventosWithConfirmation(t *testing.T) {
 	}
 }
 
+func TestClearAllRoutinesWithConfirmation(t *testing.T) {
+	tmpDir, err := os.MkdirTemp("", "atlas_clear_routines_*")
+	if err != nil {
+		t.Fatalf("failed to create temp dir: %v", err)
+	}
+	defer os.RemoveAll(tmpDir)
+
+	dbPath := filepath.Join(tmpDir, "test.sqlite")
+	db, err := database.Open(dbPath, "", "")
+	if err != nil {
+		t.Fatalf("failed to open test db: %v", err)
+	}
+	defer db.Close()
+
+	ctx := context.Background()
+	count, _ := db.CountAllRoutines(ctx)
+	if count == 0 {
+		t.Fatalf("expected seeded routines, got 0")
+	}
+
+	srv := &Server{
+		db:  db,
+		cfg: &config.Config{TelegramChatID: 12345},
+	}
+	chatID := int64(12345)
+
+	// 1. Salva confirmação pendente de limpar lembretes
+	if err := srv.db.SavePendingConfirmation(ctx, chatID, "limpar_lembretes", 0, ""); err != nil {
+		t.Fatalf("failed to save pending confirmation: %v", err)
+	}
+
+	// 2. Responde "Não" (deve cancelar)
+	pending, _ := srv.db.GetPendingConfirmation(ctx, chatID)
+	handledNo, replyNo := srv.handlePendingConfirmation(ctx, chatID, "Não", pending)
+	if !handledNo || !strings.Contains(replyNo, "Operação cancelada") {
+		t.Errorf("expected cancellation message, got: %s", replyNo)
+	}
+	countAfterNo, _ := db.CountAllRoutines(ctx)
+	if countAfterNo == 0 {
+		t.Fatalf("routines should not have been deleted after 'Não'")
+	}
+
+	// 3. Responde "Sim" (deve apagar todos)
+	_ = srv.db.SavePendingConfirmation(ctx, chatID, "limpar_lembretes", 0, "")
+	pending2, _ := srv.db.GetPendingConfirmation(ctx, chatID)
+	handledYes, replyYes := srv.handlePendingConfirmation(ctx, chatID, "Sim", pending2)
+	if !handledYes || !strings.Contains(replyYes, "removidos com sucesso") {
+		t.Errorf("expected success message, got: %s", replyYes)
+	}
+
+	countAfterYes, _ := db.CountAllRoutines(ctx)
+	if countAfterYes != 0 {
+		t.Fatalf("expected 0 routines after 'Sim', got %d", countAfterYes)
+	}
+}
+
 func TestSonarBridgeCommand(t *testing.T) {
 	sonarClient := sonar.NewClient("", "Li3cht3nst3in2", "/home/chocotonilitz/Programacao/projetos/sonar/sonar_bridge.php", "/home/chocotonilitz/Programacao/projetos")
 

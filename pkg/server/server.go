@@ -544,6 +544,19 @@ func (s *Server) handlePendingConfirmation(ctx context.Context, chatID int64, in
 			return true, fmt.Sprintf("🗑️ Agenda limpa com sucesso. Todos os *%d* compromissos foram removidos.", total)
 		}
 		return true, "⚠️ Confirmação não compreendida. Por segurança, sua agenda foi mantida intacta."
+
+	case "limpar_lembretes":
+		if isNo {
+			return true, "👍 Operação cancelada. Seus lembretes e rotinas continuam intactos."
+		}
+		if isYes {
+			total, err := s.db.ClearAllRoutines(ctx)
+			if err != nil {
+				return true, "⚠️ Ocorreu um erro ao tentar limpar os lembretes."
+			}
+			return true, fmt.Sprintf("🗑️ Todos os *%d* lembretes e rotinas programadas foram removidos com sucesso.", total)
+		}
+		return true, "⚠️ Confirmação não compreendida. Por segurança, seus lembretes foram mantidos intactos."
 	}
 
 	return false, ""
@@ -835,6 +848,14 @@ func (s *Server) executeAppAction(ctx context.Context, intent *nlu.IntentResult)
 		_ = s.db.SavePendingConfirmation(ctx, s.cfg.TelegramChatID, "limpar_agenda", 0, "")
 		return fmt.Sprintf("⚠️ *Atenção:* Você tem certeza de que deseja *apagar todos os %d compromissos* da sua agenda?\n\nEsta ação é permanente e irreversível.\n\n👉 Responda com *Sim* para confirmar ou *Não* para cancelar.", count)
 
+	case "limpar_lembretes":
+		count, _ := s.db.CountAllRoutines(ctx)
+		if count == 0 {
+			return "⏰ Nenhum lembrete ou rotina cadastrada no momento."
+		}
+		_ = s.db.SavePendingConfirmation(ctx, s.cfg.TelegramChatID, "limpar_lembretes", 0, "")
+		return fmt.Sprintf("⚠️ *Atenção:* Você tem certeza de que deseja *apagar todos os %d lembretes e rotinas diárias*?\n\nEsta ação é permanente e irreversível.\n\n👉 Responda com *Sim* para confirmar ou *Não* para cancelar.", count)
+
 	case "atualizar_meta":
 		if intent.Termo != "" {
 			id, title, err := s.db.FindGoalByTitle(ctx, intent.Termo)
@@ -1056,6 +1077,16 @@ func (s *Server) handleCommand(ctx context.Context, chatID int64, cmdText string
 		}
 		_ = s.db.SavePendingConfirmation(ctx, chatID, "limpar_agenda", 0, "")
 		msg := fmt.Sprintf("⚠️ *Atenção:* Você tem certeza de que deseja *apagar todos os %d compromissos* da sua agenda?\n\nEsta ação é permanente e irreversível.\n\n👉 Responda com *Sim* para confirmar ou *Não* para cancelar.", count)
+		_ = s.tg.SendMessage(ctx, chatID, msg)
+
+	case "/limpar_lembretes", "/limpar_rotinas":
+		count, _ := s.db.CountAllRoutines(ctx)
+		if count == 0 {
+			_ = s.tg.SendMessage(ctx, chatID, "⏰ Nenhum lembrete ou rotina cadastrada no momento.")
+			return
+		}
+		_ = s.db.SavePendingConfirmation(ctx, chatID, "limpar_lembretes", 0, "")
+		msg := fmt.Sprintf("⚠️ *Atenção:* Você tem certeza de que deseja *apagar todos os %d lembretes e rotinas diárias*?\n\nEsta ação é permanente e irreversível.\n\n👉 Responda com *Sim* para confirmar ou *Não* para cancelar.", count)
 		_ = s.tg.SendMessage(ctx, chatID, msg)
 
 	case "/sonar", "$":
@@ -1362,6 +1393,8 @@ func matchFastPath(text string) (string, bool) {
 		return "/backup", true
 	case "limpar agenda", "limpar compromissos", "limpar tudo", "apagar agenda", "apagar todos os compromissos", "apagar todos compromissos", "excluir todos os compromissos", "limpar todos os compromissos", "zerar agenda", "zerar compromissos", "apagar meus compromissos":
 		return "/limpar_agenda", true
+	case "limpar lembretes", "limpar rotinas", "apagar todos os lembretes", "apagar todos lembretes", "excluir todos os lembretes", "zerar lembretes", "zerar rotinas", "apagar lembretes", "apagar rotinas":
+		return "/limpar_lembretes", true
 	}
 
 	// Atalhos do Sonar CLI (Terminal Linux Zero Tokens)

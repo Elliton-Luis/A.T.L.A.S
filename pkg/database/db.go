@@ -545,6 +545,22 @@ func (db *DB) DeleteRoutine(ctx context.Context, id int64) error {
 	return err
 }
 
+// CountAllRoutines returns total number of active/inactive routines in the database.
+func (db *DB) CountAllRoutines(ctx context.Context) (int, error) {
+	var count int
+	err := db.QueryRowContext(ctx, "SELECT COUNT(*) FROM rotinas_proativas").Scan(&count)
+	return count, err
+}
+
+// ClearAllRoutines deletes all routines/lembretes from database.
+func (db *DB) ClearAllRoutines(ctx context.Context) (int64, error) {
+	res, err := db.ExecContext(ctx, "DELETE FROM rotinas_proativas")
+	if err != nil {
+		return 0, err
+	}
+	return res.RowsAffected()
+}
+
 // UpdateRoutineTime changes the scheduled hour of a routine.
 func (db *DB) UpdateRoutineTime(ctx context.Context, id int64, newTime string) error {
 	_, err := db.ExecContext(ctx, "UPDATE rotinas_proativas SET horario = ? WHERE id = ?", newTime, id)
