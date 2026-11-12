@@ -12,12 +12,13 @@ import (
 	"time"
 
 	"atlas/pkg/database"
+	"atlas/pkg/pool"
 )
 
 type Client struct {
-	groqKey        string
+	groqPool       *pool.KeyPool
 	groqModel      string
-	nvidiaKey      string
+	nvidiaPool     *pool.KeyPool
 	nvidiaModel    string
 	maxTokensQuick int
 	maxTokensHeavy int
@@ -85,20 +86,20 @@ type ChatCompletionResponse struct {
 	} `json:"choices"`
 }
 
-func NewClient(groqKey, nvidiaKey, nvidiaModel string, maxTokensQuick, maxTokensHeavy int) *Client {
+func NewClient(groqKeys, nvidiaKeys, nvidiaModel string, maxTokensQuick, maxTokensHeavy int) *Client {
 	if nvidiaModel == "" {
 		nvidiaModel = "meta/llama-3.2-90b-vision-instruct"
 	}
 	if maxTokensQuick <= 0 {
-		maxTokensQuick = 250
+		maxTokensQuick = 450
 	}
 	if maxTokensHeavy <= 0 {
 		maxTokensHeavy = 800
 	}
 	return &Client{
-		groqKey:        groqKey,
+		groqPool:       pool.New(groqKeys),
 		groqModel:      "qwen/qwen3.8-27b",
-		nvidiaKey:      nvidiaKey,
+		nvidiaPool:     pool.New(nvidiaKeys),
 		nvidiaModel:    nvidiaModel,
 		maxTokensQuick: maxTokensQuick,
 		maxTokensHeavy: maxTokensHeavy,
@@ -154,7 +155,7 @@ func SanitizeHumanResponse(s string) string {
 
 // ParseIntent sends the user's message along with sliding history to NLU (Groq LPU ultra-fast / NVIDIA fallback).
 func (c *Client) ParseIntent(ctx context.Context, text, currentDatetime string, history []database.ChatMessage) (*IntentResult, error) {
-	if c.groqKey == "" && c.nvidiaKey == "" {
+	if c.groqPool.IsEmpty() && c.nvidiaPool.IsEmpty() {
 		return nil, fmt.Errorf("nenhuma chave de IA (Groq ou NVIDIA) configurada")
 	}
 
@@ -358,28 +359,61 @@ Responda com extrema sofisticação, profundidade analítica, clareza cirúrgica
 		MaxTokens:   c.maxTokensHeavy,
 	}
 
-	return c.executeAPI(ctx, "https://integrate.api.nvidia.com/v1/chat/completions", c.nvidiaKey, payload)
-}
-
-func (c *Client) doRequest(ctx context.Context, payload ChatCompletionRequest) (string, error) {
-	// 1. Tenta Groq primeiro (velocidade relâmpago de ~0.3s)
-	if c.groqKey != "" {
-		groqPayload := payload
-		groqPayload.Model = c.groqModel
-		res, err := c.executeAPI(ctx, "https://api.groq.com/openai/v1/chat/completions", c.groqKey, groqPayload)
+	// 1. Tenta NVIDIA NIM com rotação e fallback no pool de chaves
+	if !c.nvidiaPool.IsEmpty() {
+		res, err := c.executePoolAPI(ctx, "https://integrate.api.nvidia.com/v1/chat/completions", c.nvidiaPool, payload)
 		if err == nil && res != "" {
 			return res, nil
 		}
 	}
 
-	// 2. Fallback para NVIDIA NIM caso Groq oscile
-	if c.nvidiaKey != "" {
+	// 2. Fallback para Groq se todas as chaves NVIDIA falharem
+	if !c.groqPool.IsEmpty() {
+		payload.Model = c.groqModel
+		return c.executePoolAPI(ctx, "https://api.groq.com/openai/v1/chat/completions", c.groqPool, payload)
+	}
+
+	return "", fmt.Errorf("nenhum provedor de IA disponível para análise profunda")
+}
+
+func (c *Client) doRequest(ctx context.Context, payload ChatCompletionRequest) (string, error) {
+	// 1. Tenta Groq primeiro (velocidade relâmpago de ~0.3s) com pool de chaves
+	if !c.groqPool.IsEmpty() {
+		groqPayload := payload
+		groqPayload.Model = c.groqModel
+		res, err := c.executePoolAPI(ctx, "https://api.groq.com/openai/v1/chat/completions", c.groqPool, groqPayload)
+		if err == nil && res != "" {
+			return res, nil
+		}
+	}
+
+	// 2. Fallback para NVIDIA NIM com pool de chaves caso Groq oscile
+	if !c.nvidiaPool.IsEmpty() {
 		nvidiaPayload := payload
 		nvidiaPayload.Model = c.nvidiaModel
-		return c.executeAPI(ctx, "https://integrate.api.nvidia.com/v1/chat/completions", c.nvidiaKey, nvidiaPayload)
+		return c.executePoolAPI(ctx, "https://integrate.api.nvidia.com/v1/chat/completions", c.nvidiaPool, nvidiaPayload)
 	}
 
 	return "", fmt.Errorf("nenhum provedor de IA (Groq ou NVIDIA) configurado com sucesso")
+}
+
+func (c *Client) executePoolAPI(ctx context.Context, url string, keyPool *pool.KeyPool, payload ChatCompletionRequest) (string, error) {
+	if keyPool.IsEmpty() {
+		return "", fmt.Errorf("nenhuma chave disponível para %s", url)
+	}
+
+	keys := keyPool.OrderedKeys()
+	var lastErr error
+
+	for _, key := range keys {
+		res, err := c.executeAPI(ctx, url, key, payload)
+		if err == nil && res != "" {
+			return res, nil
+		}
+		lastErr = err
+	}
+
+	return "", lastErr
 }
 
 func (c *Client) executeAPI(ctx context.Context, url, apiKey string, payload ChatCompletionRequest) (string, error) {
