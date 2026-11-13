@@ -370,3 +370,35 @@ func (c *Client) SendDocument(ctx context.Context, chatID int64, filePath, capti
 
 	return nil
 }
+
+// SendChatAction informs the user that the bot is processing or typing (e.g. "typing", "upload_document").
+func (c *Client) SendChatAction(ctx context.Context, chatID int64, action string) error {
+	if action == "" {
+		action = "typing"
+	}
+
+	payload := map[string]interface{}{
+		"chat_id": chatID,
+		"action":  action,
+	}
+
+	body, err := json.Marshal(payload)
+	if err != nil {
+		return err
+	}
+
+	url := fmt.Sprintf("https://api.telegram.org/bot%s/sendChatAction", c.botToken)
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(body))
+	if err != nil {
+		return err
+	}
+	req.Header.Set("Content-Type", "application/json")
+
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+
+	return nil
+}

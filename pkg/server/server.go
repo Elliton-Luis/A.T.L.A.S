@@ -232,6 +232,10 @@ func (s *Server) handleWebhook(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) processIncomingMessage(ctx context.Context, msg *telegram.Message) {
 	chatID := msg.Chat.ID
+
+	// Feedback Imediato: Ativa indicador nativo ("ATLAS está digitando...") para o usuário saber que a mensagem foi recebida e compreendida
+	_ = s.tg.SendChatAction(ctx, chatID, "typing")
+
 	var inputText string
 
 	// 1. Extração de Texto, Voz, Áudios ou Documentos (com Groq Whisper e Extrator de Documentos)
@@ -297,6 +301,10 @@ func (s *Server) processIncomingMessage(ctx context.Context, msg *telegram.Messa
 				inputText = strings.TrimSpace(transcription)
 			}
 		} else if documents.IsSupportedDocument(msg.Document.FileName) {
+			_ = s.tg.SendChatAction(ctx, chatID, "typing")
+			_ = s.tg.SendMessage(ctx, chatID, fmt.Sprintf("📄 *Documento recebido:* `%s`\n_Lendo e estruturando síntese executiva..._", msg.Document.FileName))
+			_ = s.tg.SendChatAction(ctx, chatID, "typing")
+
 			tmpPath, err := s.tg.DownloadFileToTemp(ctx, msg.Document.FileID, "atlas_doc_*")
 			if err != nil {
 				log.Printf("[Erro] Download de documento falhou: %v\n", err)
@@ -358,6 +366,7 @@ func (s *Server) processIncomingMessage(ctx context.Context, msg *telegram.Messa
 	}
 
 	// 3. Processamento Cognitivo e Socrático via NLU
+	_ = s.tg.SendChatAction(ctx, chatID, "typing")
 	now := time.Now().In(s.cfg.Location)
 	currentDatetime := database.FormatDateTime(now)
 
@@ -1245,6 +1254,7 @@ func (s *Server) handleCommand(ctx context.Context, chatID int64, cmdText string
 		_ = s.tg.SendMessage(ctx, chatID, msg)
 
 	case "/liturgia":
+		_ = s.tg.SendChatAction(ctx, chatID, "typing")
 		text, err := web.FetchLiturgiaDiaria(ctx)
 		if err != nil {
 			_ = s.tg.SendMessage(ctx, chatID, "⚠️ Erro ao consultar a liturgia diária.")
@@ -1253,6 +1263,7 @@ func (s *Server) handleCommand(ctx context.Context, chatID int64, cmdText string
 		_ = s.tg.SendMessage(ctx, chatID, text)
 
 	case "/santo":
+		_ = s.tg.SendChatAction(ctx, chatID, "typing")
 		text, err := catholic.FetchSantoDoDia(ctx)
 		if err != nil {
 			_ = s.tg.SendMessage(ctx, chatID, "⚠️ Erro ao consultar o Santo do Dia.")
@@ -1261,6 +1272,7 @@ func (s *Server) handleCommand(ctx context.Context, chatID int64, cmdText string
 		_ = s.tg.SendMessage(ctx, chatID, text)
 
 	case "/versiculo", "/biblia":
+		_ = s.tg.SendChatAction(ctx, chatID, "typing")
 		ref := ""
 		if len(parts) >= 2 {
 			ref = strings.Join(parts[1:], " ")
@@ -1273,6 +1285,7 @@ func (s *Server) handleCommand(ctx context.Context, chatID int64, cmdText string
 		_ = s.tg.SendMessage(ctx, chatID, text)
 
 	case "/horas", "/liturgiadashoras":
+		_ = s.tg.SendChatAction(ctx, chatID, "typing")
 		sub := ""
 		if len(parts) >= 2 {
 			sub = strings.ToLower(parts[1])
@@ -1440,6 +1453,7 @@ func (s *Server) handleCommand(ctx context.Context, chatID int64, cmdText string
 		_ = s.tg.SendMessage(ctx, chatID, fmt.Sprintf("🗑️ Conta *%s* removida do monitoramento de vencimentos.", delName))
 
 	case "/noticias":
+		_ = s.tg.SendChatAction(ctx, chatID, "typing")
 		termo := "brasil"
 		if len(parts) >= 2 {
 			termo = strings.Join(parts[1:], " ")
@@ -1586,6 +1600,7 @@ func (s *Server) handleCommand(ctx context.Context, chatID int64, cmdText string
 		_ = s.tg.SendMessage(ctx, chatID, fmt.Sprintf("%s```text\n%s\n```", header, cleanOut))
 
 	case "/py", "/python":
+		_ = s.tg.SendChatAction(ctx, chatID, "typing")
 		code := strings.TrimSpace(strings.TrimPrefix(cmdText, cmd))
 		if code == "" {
 			_ = s.tg.SendMessage(ctx, chatID, "🐍 *ATLAS — Interpretador Python*\n\nExecute código Python diretamente no ambiente local.\n\nUso:\n`/py print('Olá mundo')`\nou envie blocos de código com `/py`.")
