@@ -16,6 +16,11 @@ type LLMClient interface {
 	DeepAnalyze(ctx context.Context, text string, history []database.ChatMessage) (*nlu.APIResponse, error)
 }
 
+// ModelSpecificLLM allows dispatching prompts to targeted LLM models across separate quotas.
+type ModelSpecificLLM interface {
+	AnalyzeWithModel(ctx context.Context, model, text string, maxTokens int) (*nlu.APIResponse, error)
+}
+
 // Role defines the specialization of a swarm subagent.
 type Role string
 
@@ -89,22 +94,26 @@ func (o *Orchestrator) Deliberate(ctx context.Context, topic string) (*Deliberat
 
 	roles := []struct {
 		role   Role
+		model  string
 		prompt string
 	}{
 		{
-			role: RoleResearcher,
+			role:  RoleResearcher,
+			model: "openai/gpt-oss-120b",
 			prompt: fmt.Sprintf(`Você é o Agente Pesquisador em um conselho de inteligência.
 Analise a questão abaixo sob uma ótica estritamente empírica, factual e objetiva. Aponte dados, precedentes e fatos comprovados. Seja conciso (máximo 2 parágrafos).
 Tema: %s`, topic),
 		},
 		{
-			role: RoleAnalyst,
+			role:  RoleAnalyst,
+			model: "qwen/qwen3.8-27b",
 			prompt: fmt.Sprintf(`Você é o Agente Analista Lógico em um conselho de inteligência.
 Analise a questão abaixo sob uma ótica de viabilidade, métricas, estrutura de custo-benefício e trade-offs pragmáticos. Seja conciso (máximo 2 parágrafos).
 Tema: %s`, topic),
 		},
 		{
-			role: RoleCritic,
+			role:  RoleCritic,
+			model: "openai/gpt-oss-20b",
 			prompt: fmt.Sprintf(`Você é o Agente Crítico Socrático em um conselho de inteligência.
 Analise a questão abaixo procurando falhas ocultas, premissas ingênuas, pontos cegos e os piores cenários possíveis de risco. Seja implacável e conciso (máximo 2 parágrafos).
 Tema: %s`, topic),
@@ -120,19 +129,28 @@ Tema: %s`, topic),
 		wg.Add(1)
 		go func(idx int, rConfig struct {
 			role   Role
+			model  string
 			prompt string
 		}) {
 			defer wg.Done()
-			// Slight stagger (120ms) to prevent instantaneous concurrent token burst on API
+			// Slight stagger (150ms) to prevent instantaneous burst
 			if idx > 0 {
-				time.Sleep(time.Duration(idx*120) * time.Millisecond)
+				time.Sleep(time.Duration(idx*150) * time.Millisecond)
 			}
 			subStart := time.Now()
 
-			subCtx, cancel := context.WithTimeout(ctx, 20*time.Second)
+			subCtx, cancel := context.WithTimeout(ctx, 35*time.Second)
 			defer cancel()
 
-			resp, err := o.client.DeepAnalyze(subCtx, rConfig.prompt, nil)
+			var resp *nlu.APIResponse
+			var err error
+
+			if modelLLM, ok := o.client.(ModelSpecificLLM); ok {
+				resp, err = modelLLM.AnalyzeWithModel(subCtx, rConfig.model, rConfig.prompt, 320)
+			} else {
+				resp, err = o.client.DeepAnalyze(subCtx, rConfig.prompt, nil)
+			}
+
 			subDuration := time.Since(subStart)
 
 			if err != nil {
@@ -177,10 +195,18 @@ Visões dos especialistas:
 
 Com base nas perspectivas acima (fatos, viabilidade e riscos), sintetize um veredito executivo definitivo, pragmático e com recomendações claras de ação em até 3 tópicos diretos.`, topic, perspectivesText.String())
 
-	synthCtx, synthCancel := context.WithTimeout(ctx, 15*time.Second)
+	synthCtx, synthCancel := context.WithTimeout(ctx, 20*time.Second)
 	defer synthCancel()
 
-	consensusResp, err := o.client.DeepAnalyze(synthCtx, synthesisPrompt, nil)
+	var consensusResp *nlu.APIResponse
+	var err error
+
+	if modelLLM, ok := o.client.(ModelSpecificLLM); ok {
+		consensusResp, err = modelLLM.AnalyzeWithModel(synthCtx, "openai/gpt-oss-120b", synthesisPrompt, 350)
+	} else {
+		consensusResp, err = o.client.DeepAnalyze(synthCtx, synthesisPrompt, nil)
+	}
+
 	consensusText := ""
 	if err == nil && consensusResp != nil {
 		consensusText = nlu.SanitizeHumanResponse(consensusResp.Text)

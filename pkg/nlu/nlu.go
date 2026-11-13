@@ -99,8 +99,9 @@ type ChatCompletionRequest struct {
 type ChatCompletionResponse struct {
 	Choices []struct {
 		Message struct {
-			Role    string `json:"role"`
-			Content string `json:"content"`
+			Role      string `json:"role"`
+			Content   string `json:"content"`
+			Reasoning string `json:"reasoning,omitempty"`
 		} `json:"message"`
 	} `json:"choices"`
 	Usage struct {
@@ -483,7 +484,34 @@ Gere um balanço do dia:
 	return res.Text, nil
 }
 
-// DeepAnalyze delegates heavy research, complex analysis or strategic evaluations to NVIDIA NIM.
+// AnalyzeWithModel executes inference with a targeted model, enabling multi-model Swarm distribution.
+func (c *Client) AnalyzeWithModel(ctx context.Context, model, text string, maxTokens int) (*APIResponse, error) {
+	if maxTokens <= 0 {
+		maxTokens = 320
+	}
+	payload := ChatCompletionRequest{
+		Model: model,
+		Messages: []ChatMessagePayload{
+			{Role: "user", Content: text},
+		},
+		Temperature: 0.3,
+		MaxTokens:   maxTokens,
+	}
+
+	// 1. Tenta Groq com o modelo específico solicitado
+	if !c.groqPool.IsEmpty() {
+		res, err := c.executePoolAPI(ctx, "https://api.groq.com/openai/v1/chat/completions", c.groqPool, payload)
+		if err == nil && res != nil {
+			return res, nil
+		}
+	}
+
+	// 2. Fallback para DeepAnalyze
+	return c.DeepAnalyze(ctx, text, nil)
+}
+
+// DeepAnalyze delegates heavy research, complex analysis or strategic evaluations.
+// Prioriza Groq com OpenAI GPT-OSS 120B (sub-segundo) e faz fallback para Qwen 27B e NVIDIA NIM.
 func (c *Client) DeepAnalyze(ctx context.Context, text string, history []database.ChatMessage) (*APIResponse, error) {
 	systemPrompt := `Você é o ATLAS: assistente executivo e estrategista de alto nível estilo JARVIS.
 Você foi acionado para uma análise aprofundada, pesquisa ou raciocínio complexo.
@@ -495,24 +523,30 @@ Responda com extrema sofisticação, profundidade analítica, clareza cirúrgica
 	messages = append(messages, buildCleanHistory(history, text)...)
 
 	payload := ChatCompletionRequest{
-		Model:       c.nvidiaModel,
+		Model:       "openai/gpt-oss-120b",
 		Messages:    messages,
 		Temperature: 0.3,
 		MaxTokens:   c.maxTokensHeavy,
 	}
 
-	// 1. Tenta NVIDIA NIM com rotação e fallback no pool de chaves
-	if !c.nvidiaPool.IsEmpty() {
-		res, err := c.executePoolAPI(ctx, "https://integrate.api.nvidia.com/v1/chat/completions", c.nvidiaPool, payload)
+	// 1. Tenta Groq primeiro (velocidade relâmpago de ~0.8s) com GPT-OSS 120B
+	if !c.groqPool.IsEmpty() {
+		res, err := c.executePoolAPI(ctx, "https://api.groq.com/openai/v1/chat/completions", c.groqPool, payload)
+		if err == nil && res != nil {
+			return res, nil
+		}
+		// Fallback no Groq para Qwen 27B
+		payload.Model = c.groqModel
+		res, err = c.executePoolAPI(ctx, "https://api.groq.com/openai/v1/chat/completions", c.groqPool, payload)
 		if err == nil && res != nil {
 			return res, nil
 		}
 	}
 
-	// 2. Fallback para Groq se todas as chaves NVIDIA falharem
-	if !c.groqPool.IsEmpty() {
-		payload.Model = c.groqModel
-		return c.executePoolAPI(ctx, "https://api.groq.com/openai/v1/chat/completions", c.groqPool, payload)
+	// 2. Fallback para NVIDIA NIM caso Groq atinja rate limit ou oscile
+	if !c.nvidiaPool.IsEmpty() {
+		payload.Model = c.nvidiaModel
+		return c.executePoolAPI(ctx, "https://integrate.api.nvidia.com/v1/chat/completions", c.nvidiaPool, payload)
 	}
 
 	return nil, fmt.Errorf("nenhum provedor de IA disponível para análise profunda")
@@ -534,24 +568,29 @@ Diretrizes do Perfil de Pesquisa:
 	messages = append(messages, buildCleanHistory(history, text)...)
 
 	payload := ChatCompletionRequest{
-		Model:       c.nvidiaModel,
+		Model:       "openai/gpt-oss-120b",
 		Messages:    messages,
 		Temperature: 0.3,
 		MaxTokens:   c.maxTokensResearch,
 	}
 
-	// 1. Tenta NVIDIA NIM
-	if !c.nvidiaPool.IsEmpty() {
-		res, err := c.executePoolAPI(ctx, "https://integrate.api.nvidia.com/v1/chat/completions", c.nvidiaPool, payload)
+	// 1. Tenta Groq primeiro (sub-segundo)
+	if !c.groqPool.IsEmpty() {
+		res, err := c.executePoolAPI(ctx, "https://api.groq.com/openai/v1/chat/completions", c.groqPool, payload)
+		if err == nil && res != nil {
+			return res, nil
+		}
+		payload.Model = c.groqModel
+		res, err = c.executePoolAPI(ctx, "https://api.groq.com/openai/v1/chat/completions", c.groqPool, payload)
 		if err == nil && res != nil {
 			return res, nil
 		}
 	}
 
-	// 2. Fallback para Groq
-	if !c.groqPool.IsEmpty() {
-		payload.Model = c.groqModel
-		return c.executePoolAPI(ctx, "https://api.groq.com/openai/v1/chat/completions", c.groqPool, payload)
+	// 2. Fallback para NVIDIA NIM
+	if !c.nvidiaPool.IsEmpty() {
+		payload.Model = c.nvidiaModel
+		return c.executePoolAPI(ctx, "https://integrate.api.nvidia.com/v1/chat/completions", c.nvidiaPool, payload)
 	}
 
 	return nil, fmt.Errorf("nenhum provedor de IA disponível para pesquisa profunda")
@@ -600,11 +639,11 @@ func (c *Client) executePoolAPI(ctx context.Context, url string, keyPool *pool.K
 func (c *Client) executeAPI(ctx context.Context, url, apiKey string, payload ChatCompletionRequest) (*APIResponse, error) {
 	// Auto-clamp tokens on Groq to prevent Cloudflare / OTPM (Output Tokens Per Minute) 1000 limit breaches
 	if strings.Contains(url, "groq") {
-		if payload.MaxTokens > 380 {
-			payload.MaxTokens = 380
+		if payload.MaxTokens > 350 {
+			payload.MaxTokens = 350
 		}
 		if payload.MaxTokens <= 0 {
-			payload.MaxTokens = 300
+			payload.MaxTokens = 280
 		}
 	}
 
@@ -613,7 +652,14 @@ func (c *Client) executeAPI(ctx context.Context, url, apiKey string, payload Cha
 		return nil, fmt.Errorf("marshal request: %w", err)
 	}
 
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(body))
+	callCtx := ctx
+	if strings.Contains(url, "nvidia") {
+		var nvidiaCancel context.CancelFunc
+		callCtx, nvidiaCancel = context.WithTimeout(ctx, 4*time.Second)
+		defer nvidiaCancel()
+	}
+
+	req, err := http.NewRequestWithContext(callCtx, http.MethodPost, url, bytes.NewReader(body))
 	if err != nil {
 		return nil, fmt.Errorf("create req: %w", err)
 	}
@@ -646,8 +692,13 @@ func (c *Client) executeAPI(ctx context.Context, url, apiKey string, payload Cha
 		provider = "nvidia"
 	}
 
+	content := strings.TrimSpace(res.Choices[0].Message.Content)
+	if content == "" && res.Choices[0].Message.Reasoning != "" {
+		content = strings.TrimSpace(res.Choices[0].Message.Reasoning)
+	}
+
 	return &APIResponse{
-		Text:         strings.TrimSpace(res.Choices[0].Message.Content),
+		Text:         content,
 		Provider:     provider,
 		Model:        payload.Model,
 		PromptTokens: res.Usage.PromptTokens,
