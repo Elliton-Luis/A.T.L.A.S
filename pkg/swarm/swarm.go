@@ -123,9 +123,13 @@ Tema: %s`, topic),
 			prompt string
 		}) {
 			defer wg.Done()
+			// Slight stagger (120ms) to prevent instantaneous concurrent token burst on API
+			if idx > 0 {
+				time.Sleep(time.Duration(idx*120) * time.Millisecond)
+			}
 			subStart := time.Now()
 
-			subCtx, cancel := context.WithTimeout(ctx, 25*time.Second)
+			subCtx, cancel := context.WithTimeout(ctx, 20*time.Second)
 			defer cancel()
 
 			resp, err := o.client.DeepAnalyze(subCtx, rConfig.prompt, nil)

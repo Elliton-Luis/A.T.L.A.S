@@ -123,14 +123,14 @@ func NewClient(groqKeys, nvidiaKeys, nvidiaModel string, maxTokensQuick, maxToke
 	if nvidiaModel == "" {
 		nvidiaModel = "meta/llama-3.2-90b-vision-instruct"
 	}
-	if maxTokensQuick <= 0 {
-		maxTokensQuick = 450
+	if maxTokensHeavy <= 0 || maxTokensHeavy > 400 {
+		maxTokensHeavy = 350
 	}
-	if maxTokensHeavy <= 0 {
-		maxTokensHeavy = 2048
+	if maxTokensQuick <= 0 || maxTokensQuick > 350 {
+		maxTokensQuick = 300
 	}
-	if maxTokensResearch <= 0 {
-		maxTokensResearch = 4096
+	if maxTokensResearch <= 0 || maxTokensResearch > 800 {
+		maxTokensResearch = 500
 	}
 	return &Client{
 		groqPool:          pool.New(groqKeys),
@@ -141,7 +141,7 @@ func NewClient(groqKeys, nvidiaKeys, nvidiaModel string, maxTokensQuick, maxToke
 		maxTokensHeavy:    maxTokensHeavy,
 		maxTokensResearch: maxTokensResearch,
 		httpClient: &http.Client{
-			Timeout: 20 * time.Second,
+			Timeout: 12 * time.Second,
 		},
 	}
 }
@@ -598,6 +598,16 @@ func (c *Client) executePoolAPI(ctx context.Context, url string, keyPool *pool.K
 }
 
 func (c *Client) executeAPI(ctx context.Context, url, apiKey string, payload ChatCompletionRequest) (*APIResponse, error) {
+	// Auto-clamp tokens on Groq to prevent Cloudflare / OTPM (Output Tokens Per Minute) 1000 limit breaches
+	if strings.Contains(url, "groq") {
+		if payload.MaxTokens > 380 {
+			payload.MaxTokens = 380
+		}
+		if payload.MaxTokens <= 0 {
+			payload.MaxTokens = 300
+		}
+	}
+
 	body, err := json.Marshal(payload)
 	if err != nil {
 		return nil, fmt.Errorf("marshal request: %w", err)
@@ -609,7 +619,7 @@ func (c *Client) executeAPI(ctx context.Context, url, apiKey string, payload Cha
 	}
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Authorization", "Bearer "+apiKey)
-	req.Header.Set("User-Agent", "AtlasBot/1.0")
+	req.Header.Set("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36")
 
 	resp, err := c.httpClient.Do(req)
 	if err != nil {
