@@ -318,7 +318,7 @@ func (s *Server) processIncomingMessage(ctx context.Context, msg *telegram.Messa
 				inputText = fmt.Sprintf("Analise e elabore uma síntese executiva deste documento '%s':\n\n%s", msg.Document.FileName, extracted)
 			}
 		} else {
-			_ = s.tg.SendMessage(ctx, chatID, "⚠️ Formato de arquivo não suportado (aceitos: PDF, TXT, CSV, JSON, Markdown, código e áudios).")
+			_ = s.tg.SendMessage(ctx, chatID, "⚠️ Formato não suportado. Aceitos: Documentos (PDF, DOCX, XLSX, PPTX, ODT, ODS, ODP, EPUB, RTF, TXT, CSV, JSON, Markdown, código) e Áudios.")
 			return
 		}
 	}
