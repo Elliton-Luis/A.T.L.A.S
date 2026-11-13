@@ -37,9 +37,33 @@ type Reader struct {
 
 // NewReader creates a new read-only email reader.
 func NewReader(cfg Config) *Reader {
+	cfg.Host = strings.TrimSpace(cfg.Host)
+	cfg.Host = strings.TrimPrefix(cfg.Host, "ssl://")
+	cfg.Host = strings.TrimPrefix(cfg.Host, "imaps://")
+	cfg.Host = strings.TrimPrefix(cfg.Host, "imap://")
+	cfg.Host = strings.TrimPrefix(cfg.Host, "https://")
+	cfg.Host = strings.TrimPrefix(cfg.Host, "http://")
+
+	// Auto-heal common typo: imap@gmail.com -> imap.gmail.com
+	if strings.Contains(cfg.Host, "@") {
+		cfg.Host = strings.ReplaceAll(cfg.Host, "@", ".")
+	}
+
+	// Handle host:port passed together in host
+	if strings.Contains(cfg.Host, ":") {
+		parts := strings.Split(cfg.Host, ":")
+		cfg.Host = parts[0]
+		if len(parts) > 1 && parts[1] != "" {
+			cfg.Port = parts[1]
+		}
+	}
+
 	if cfg.Port == "" {
 		cfg.Port = "993"
 	}
+	cfg.Port = strings.TrimSpace(cfg.Port)
+	cfg.User = strings.TrimSpace(cfg.User)
+
 	if cfg.Timeout <= 0 {
 		cfg.Timeout = 15 * time.Second
 	}

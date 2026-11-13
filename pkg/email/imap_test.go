@@ -150,3 +150,26 @@ func TestIMAPReaderWorkflow(t *testing.T) {
 		t.Errorf("expected from 'banco@exemplo.com', got '%s'", res[0].From)
 	}
 }
+
+func TestNewReaderSanitization(t *testing.T) {
+	r := NewReader(Config{
+		Host: " imap@gmail.com ",
+		Port: "",
+	})
+	if r.cfg.Host != "imap.gmail.com" {
+		t.Errorf("expected 'imap.gmail.com', got '%s'", r.cfg.Host)
+	}
+	if r.cfg.Port != "993" {
+		t.Errorf("expected port '993', got '%s'", r.cfg.Port)
+	}
+
+	r2 := NewReader(Config{
+		Host: "ssl://imap.gmail.com:993",
+	})
+	if r2.cfg.Host != "imap.gmail.com" {
+		t.Errorf("expected 'imap.gmail.com', got '%s'", r2.cfg.Host)
+	}
+	if r2.cfg.Port != "993" {
+		t.Errorf("expected port '993', got '%s'", r2.cfg.Port)
+	}
+}
