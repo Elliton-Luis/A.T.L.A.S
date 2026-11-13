@@ -139,6 +139,14 @@ var canonicalMap = map[string]string{
 	"biblias":    "versiculo",
 	"passagem":   "versiculo",
 	"vulgata":    "versiculo",
+
+	// Liturgia das Horas -> "horas"
+	"horas":            "horas",
+	"laudes":           "horas",
+	"vesperas":         "horas",
+	"completas":        "horas",
+	"oficio":           "horas",
+	"liturgiadashoras": "horas",
 }
 
 // RemoveAccents converte caracteres acentuados para equivalentes ASCII simples.

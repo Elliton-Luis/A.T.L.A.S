@@ -90,3 +90,32 @@ func TestFetchSantoDoDia(t *testing.T) {
 		t.Errorf("expected saint name in text, got: %s", text)
 	}
 }
+
+func TestDetermineCurrentHour(t *testing.T) {
+	loc := time.UTC
+	h7 := time.Date(2026, 11, 12, 7, 0, 0, 0, loc)
+	if DetermineCurrentHour(h7) != "Laudes" {
+		t.Errorf("expected Laudes at 07:00, got %s", DetermineCurrentHour(h7))
+	}
+	h19 := time.Date(2026, 11, 12, 19, 0, 0, 0, loc)
+	if DetermineCurrentHour(h19) != "Vésperas" {
+		t.Errorf("expected Vésperas at 19:00, got %s", DetermineCurrentHour(h19))
+	}
+	h22 := time.Date(2026, 11, 12, 22, 0, 0, 0, loc)
+	if DetermineCurrentHour(h22) != "Completas" {
+		t.Errorf("expected Completas at 22:00, got %s", DetermineCurrentHour(h22))
+	}
+}
+
+func TestFetchLiturgiaDasHoras(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 12*time.Second)
+	defer cancel()
+
+	text, err := FetchLiturgiaDasHoras(ctx, "Completas", time.Local)
+	if err != nil {
+		t.Fatalf("FetchLiturgiaDasHoras failed: %v", err)
+	}
+	if !strings.Contains(text, "Liturgia das Horas") || !strings.Contains(text, "Completas") {
+		t.Errorf("expected Completas in text, got: %s", text)
+	}
+}

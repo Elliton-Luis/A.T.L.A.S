@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"atlas/pkg/calculator"
+	"atlas/pkg/catholic"
 	"atlas/pkg/config"
 	"atlas/pkg/database"
 	"atlas/pkg/nlu"
@@ -242,7 +243,26 @@ func (e *Engine) executeRoutine(ctx context.Context, r database.RotinaProativa, 
 		}
 
 	case "custom":
-		if r.PromptCustom != nil && *r.PromptCustom != "" {
+		if strings.Contains(r.Nome, "Liturgia das Horas") {
+			hourQuery := "auto"
+			if strings.Contains(r.Nome, "Laudes") {
+				hourQuery = "Laudes"
+			} else if strings.Contains(r.Nome, "Vésperas") || strings.Contains(r.Nome, "Vesperas") {
+				hourQuery = "Vésperas"
+			} else if strings.Contains(r.Nome, "Completas") {
+				hourQuery = "Completas"
+			} else if strings.Contains(r.Nome, "Ofício") || strings.Contains(r.Nome, "Oficio") {
+				hourQuery = "Ofício das Leituras"
+			}
+			liveHour, err := catholic.FetchLiturgiaDasHoras(ctx, hourQuery, e.cfg.Location)
+			if err == nil && liveHour != "" {
+				message = liveHour
+			} else if r.PromptCustom != nil && *r.PromptCustom != "" {
+				message = *r.PromptCustom
+			} else {
+				message = fmt.Sprintf("⛪ *Hora da Oração — %s*", r.Nome)
+			}
+		} else if r.PromptCustom != nil && *r.PromptCustom != "" {
 			message = *r.PromptCustom
 		} else {
 			message = fmt.Sprintf("🔔 *Alerta de Rotina: %s*", r.Nome)

@@ -868,6 +868,15 @@ func (s *Server) executeAppAction(ctx context.Context, intent *nlu.IntentResult)
 		}
 		return passageText
 
+	case "liturgia_das_horas", "horas":
+		hourName := intent.Termo
+		horasText, err := catholic.FetchLiturgiaDasHoras(ctx, hourName, s.cfg.Location)
+		if err != nil {
+			log.Printf("[Erro LiturgiaDasHoras] %v\n", err)
+			return fmt.Sprintf("⚠️ Falha ao carregar a Liturgia das Horas: %v", err)
+		}
+		return horasText
+
 	case "liturgia":
 		liturgiaText, err := web.FetchLiturgiaDiaria(ctx)
 		if err != nil {
@@ -1150,6 +1159,7 @@ func (s *Server) handleCommand(ctx context.Context, chatID int64, cmdText string
 • 📖 */liturgia* — Liturgia diária católica completa com link
 • 🌟 */santo* — Santo do dia católico, história e oração
 • 📜 */versiculo <passagem>* — Bíblia Católica com Vulgata Latina (ambas)
+• ⛪ */horas [hora]* — Liturgia das Horas (opcional: */horas ativar* ou */horas desativar*)
 • 📰 */noticias <tema>* — Buscar notícias recentes na internet com links
 • ⏰ */lembretes* — Ver mensagens diárias programadas
 • 🗑️ */apagar <id>* — Apagar uma programação diária (ex: /apagar 3)
@@ -1201,6 +1211,90 @@ func (s *Server) handleCommand(ctx context.Context, chatID int64, cmdText string
 			return
 		}
 		_ = s.tg.SendMessage(ctx, chatID, text)
+
+	case "/horas", "/liturgiadashoras":
+		sub := ""
+		if len(parts) >= 2 {
+			sub = strings.ToLower(parts[1])
+		}
+
+		switch sub {
+		case "ativar", "ligar", "on", "enable":
+			routines, _ := s.db.GetAllRoutines(ctx)
+			hasLaudes, hasVesperas, hasCompletas := false, false, false
+			for _, r := range routines {
+				if strings.Contains(r.Nome, "Liturgia das Horas") {
+					if strings.Contains(r.Nome, "Laudes") {
+						hasLaudes = true
+					}
+					if strings.Contains(r.Nome, "Vésperas") || strings.Contains(r.Nome, "Vesperas") {
+						hasVesperas = true
+					}
+					if strings.Contains(r.Nome, "Completas") {
+						hasCompletas = true
+					}
+					if r.Ativo == 0 {
+						_, _ = s.db.ToggleRoutine(ctx, r.ID)
+					}
+				}
+			}
+			if !hasLaudes {
+				prompt := "Liturgia das Horas — Laudes"
+				_, _ = s.db.InsertRoutine(ctx, "Liturgia das Horas (Laudes)", "06:00", "custom", &prompt)
+			}
+			if !hasVesperas {
+				prompt := "Liturgia das Horas — Vésperas"
+				_, _ = s.db.InsertRoutine(ctx, "Liturgia das Horas (Vésperas)", "18:00", "custom", &prompt)
+			}
+			if !hasCompletas {
+				prompt := "Liturgia das Horas — Completas"
+				_, _ = s.db.InsertRoutine(ctx, "Liturgia das Horas (Completas)", "21:30", "custom", &prompt)
+			}
+			confirmMsg := "🔔 *Liturgia das Horas Ativada!*\n\nVocê receberá diariamente as orações nos momentos canônicos:\n• 🌅 *06:00* — Laudes (Oração da Manhã)\n• 🌇 *18:00* — Vésperas (Oração da Tarde)\n• 🌙 *21:30* — Completas (Oração da Noite)\n\n_Para desativar a qualquer momento: /horas desativar_"
+			_ = s.tg.SendMessage(ctx, chatID, confirmMsg)
+			return
+
+		case "desativar", "desligar", "off", "disable":
+			routines, _ := s.db.GetAllRoutines(ctx)
+			for _, r := range routines {
+				if strings.Contains(r.Nome, "Liturgia das Horas") {
+					_ = s.db.DeleteRoutine(ctx, r.ID)
+				}
+			}
+			confirmMsg := "🔕 *Liturgia das Horas Desativada.*\n\nO envio automático foi suspenso. Você ainda pode rezar sob demanda digitando:\n👉 `/horas` (hora atual)\n👉 `/horas laudes`\n👉 `/horas vesperas`\n👉 `/horas completas`"
+			_ = s.tg.SendMessage(ctx, chatID, confirmMsg)
+			return
+
+		case "status":
+			routines, _ := s.db.GetAllRoutines(ctx)
+			var activeList []string
+			for _, r := range routines {
+				if strings.Contains(r.Nome, "Liturgia das Horas") && r.Ativo == 1 {
+					activeList = append(activeList, fmt.Sprintf("• *%s* às %s", r.Nome, r.Horario))
+				}
+			}
+			if len(activeList) > 0 {
+				msg := "🔔 *Liturgia das Horas: ATIVADA 🟢*\n\nHorários diários programados:\n" + strings.Join(activeList, "\n") + "\n\n_Para desligar: /horas desativar_"
+				_ = s.tg.SendMessage(ctx, chatID, msg)
+			} else {
+				msg := "🔕 *Liturgia das Horas: DESATIVADA 🔴*\n\nO envio automático está desligado.\n\n_Para ativar o envio diário (06h, 18h e 21h30): /horas ativar_"
+				_ = s.tg.SendMessage(ctx, chatID, msg)
+			}
+			return
+
+		default:
+			target := sub
+			if len(parts) >= 2 {
+				target = strings.Join(parts[1:], " ")
+			}
+			text, err := catholic.FetchLiturgiaDasHoras(ctx, target, s.cfg.Location)
+			if err != nil {
+				_ = s.tg.SendMessage(ctx, chatID, fmt.Sprintf("⚠️ Erro ao consultar a Liturgia das Horas: %v", err))
+				return
+			}
+			_ = s.tg.SendMessage(ctx, chatID, text)
+			return
+		}
 
 	case "/noticias":
 		termo := "brasil"
@@ -1479,25 +1573,20 @@ func (s *Server) handleCommand(ctx context.Context, chatID int64, cmdText string
 
 		_ = s.tg.SendMessage(ctx, chatID, "📬 *Acessando sua caixa de entrada (modo seguro somente-leitura)...*")
 
-		go func() {
-			mailCtx, cancel := context.WithTimeout(context.Background(), 35*time.Second)
-			defer cancel()
+		unread, err := s.emailReader.FetchRecentUnread(ctx, 7)
+		if err != nil {
+			log.Printf("[Erro Email] %v\n", err)
+			_ = s.tg.SendMessage(ctx, chatID, fmt.Sprintf("⚠️ Falha ao ler e-mails: %v", err))
+			return
+		}
 
-			unread, err := s.emailReader.FetchRecentUnread(mailCtx, 7)
-			if err != nil {
-				log.Printf("[Erro Email] %v\n", err)
-				_ = s.tg.SendMessage(mailCtx, chatID, fmt.Sprintf("⚠️ Falha ao ler e-mails: %v", err))
-				return
-			}
+		curated, err := email.CurateEmails(ctx, s.nluClient, unread)
+		if err != nil {
+			_ = s.tg.SendMessage(ctx, chatID, "⚠️ Falha ao analisar e-mails.")
+			return
+		}
 
-			curated, err := email.CurateEmails(mailCtx, s.nluClient, unread)
-			if err != nil {
-				_ = s.tg.SendMessage(mailCtx, chatID, "⚠️ Falha ao analisar e-mails.")
-				return
-			}
-
-			_ = s.tg.SendMessage(mailCtx, chatID, curated)
-		}()
+		_ = s.tg.SendMessage(ctx, chatID, curated)
 
 	case "/rotina":
 		if len(parts) >= 3 && strings.ToLower(parts[2]) == "toggle" {
@@ -1907,6 +1996,34 @@ func matchFastPath(text string) (string, bool) {
 		if _, _, _, _, err := catholic.ParseReference(clean); err == nil && len(tokens) <= 5 && !strings.Contains(clean, "marcar") && !strings.Contains(clean, "agendar") {
 			return "/versiculo " + clean, true
 		}
+	}
+
+	// Liturgia das Horas
+	if strings.Contains(clean, "liturgia das horas") || strings.Contains(clean, "liturgiadashoras") ||
+		strings.Contains(clean, "laudes") || strings.Contains(clean, "vesperas") || strings.Contains(clean, "completas") ||
+		strings.Contains(clean, "oficio das leituras") {
+		if strings.Contains(clean, "desativar") || strings.Contains(clean, "desligar") || strings.Contains(clean, "off") || strings.Contains(clean, "cancelar") {
+			return "/horas desativar", true
+		}
+		if strings.Contains(clean, "ativar") || strings.Contains(clean, "ligar") || strings.Contains(clean, "on") {
+			return "/horas ativar", true
+		}
+		if strings.Contains(clean, "status") {
+			return "/horas status", true
+		}
+		if strings.Contains(clean, "laudes") {
+			return "/horas laudes", true
+		}
+		if strings.Contains(clean, "vesperas") {
+			return "/horas vesperas", true
+		}
+		if strings.Contains(clean, "completas") {
+			return "/horas completas", true
+		}
+		if strings.Contains(clean, "oficio") {
+			return "/horas oficio", true
+		}
+		return "/horas", true
 	}
 
 	if strings.Contains(clean, "liturgia") || strings.Contains(clean, "evangelho") {

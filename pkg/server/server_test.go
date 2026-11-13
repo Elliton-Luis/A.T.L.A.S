@@ -385,6 +385,12 @@ func TestMatchFastPathPriorities(t *testing.T) {
 		{"versiculo Joao 3:16", "/versiculo joao 3:16", true},
 		{"Joao 3:16", "/versiculo joao 3:16", true},
 		{"Sl 23:1", "/versiculo sl 23:1", true},
+		{"liturgia das horas", "/horas", true},
+		{"laudes", "/horas laudes", true},
+		{"vesperas", "/horas vesperas", true},
+		{"completas", "/horas completas", true},
+		{"ativar liturgia das horas", "/horas ativar", true},
+		{"desativar liturgia das horas", "/horas desativar", true},
 	}
 
 	for _, tc := range testCases {
