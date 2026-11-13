@@ -4,10 +4,16 @@ import (
 	"context"
 	"crypto/tls"
 	"fmt"
+	"io"
+	"mime"
+	"net"
 	"net/textproto"
+	"strconv"
 	"strings"
 	"time"
 )
+
+var wordDecoder = new(mime.WordDecoder)
 
 // MessageSummary holds the high-level metadata and snippet of an email.
 type MessageSummary struct {
@@ -29,35 +35,44 @@ type Config struct {
 }
 
 // Reader provides strictly read-only access to an IMAP mailbox.
-// It uses EXAMINE instead of SELECT to guarantee that no flags or states can be altered on the server,
-// and uses BODY.PEEK to prevent messages from automatically being marked as read.
 type Reader struct {
 	cfg Config
 }
 
-// NewReader creates a new read-only email reader.
+// NewReader creates a new read-only email reader with robust host sanitization.
 func NewReader(cfg Config) *Reader {
-	cfg.Host = strings.TrimSpace(cfg.Host)
-	cfg.Host = strings.TrimPrefix(cfg.Host, "ssl://")
-	cfg.Host = strings.TrimPrefix(cfg.Host, "imaps://")
-	cfg.Host = strings.TrimPrefix(cfg.Host, "imap://")
-	cfg.Host = strings.TrimPrefix(cfg.Host, "https://")
-	cfg.Host = strings.TrimPrefix(cfg.Host, "http://")
+	host := strings.ToLower(strings.TrimSpace(cfg.Host))
+	host = strings.TrimPrefix(host, "ssl://")
+	host = strings.TrimPrefix(host, "imaps://")
+	host = strings.TrimPrefix(host, "imap://")
+	host = strings.TrimPrefix(host, "https://")
+	host = strings.TrimPrefix(host, "http://")
 
-	// Auto-heal common typo: imap@gmail.com -> imap.gmail.com
-	if strings.Contains(cfg.Host, "@") {
-		cfg.Host = strings.ReplaceAll(cfg.Host, "@", ".")
+	// Auto-heal common mistakes: imap@gmail.com or user@gmail.com in host
+	if strings.Contains(host, "@") {
+		parts := strings.Split(host, "@")
+		host = parts[len(parts)-1]
 	}
 
-	// Handle host:port passed together in host
-	if strings.Contains(cfg.Host, ":") {
-		parts := strings.Split(cfg.Host, ":")
-		cfg.Host = parts[0]
+	// Auto-fill well known providers
+	if host == "gmail.com" || host == "googlemail.com" {
+		host = "imap.gmail.com"
+	} else if host == "outlook.com" || host == "hotmail.com" || host == "office365.com" {
+		host = "outlook.office365.com"
+	} else if host == "yahoo.com" {
+		host = "imap.mail.yahoo.com"
+	}
+
+	// Handle host:port
+	if strings.Contains(host, ":") {
+		parts := strings.Split(host, ":")
+		host = parts[0]
 		if len(parts) > 1 && parts[1] != "" {
 			cfg.Port = parts[1]
 		}
 	}
 
+	cfg.Host = host
 	if cfg.Port == "" {
 		cfg.Port = "993"
 	}
@@ -65,7 +80,7 @@ func NewReader(cfg Config) *Reader {
 	cfg.User = strings.TrimSpace(cfg.User)
 
 	if cfg.Timeout <= 0 {
-		cfg.Timeout = 15 * time.Second
+		cfg.Timeout = 10 * time.Second
 	}
 	return &Reader{cfg: cfg}
 }
@@ -76,7 +91,7 @@ func (r *Reader) IsConfigured() bool {
 }
 
 // FetchRecentUnread connects via TLS, logs in, examines INBOX (read-only),
-// and fetches up to maxCount unread or recent email headers.
+// and fetches up to maxCount recent emails without blocking.
 func (r *Reader) FetchRecentUnread(ctx context.Context, maxCount int) ([]MessageSummary, error) {
 	if !r.IsConfigured() {
 		return nil, fmt.Errorf("credenciais IMAP não configuradas no arquivo .env (IMAP_HOST, IMAP_USER, IMAP_PASS)")
@@ -87,6 +102,9 @@ func (r *Reader) FetchRecentUnread(ctx context.Context, maxCount int) ([]Message
 
 	addr := fmt.Sprintf("%s:%s", r.cfg.Host, r.cfg.Port)
 	dialer := &tls.Dialer{
+		NetDialer: &net.Dialer{
+			Timeout: 5 * time.Second,
+		},
 		Config: &tls.Config{
 			ServerName:         r.cfg.Host,
 			InsecureSkipVerify: r.cfg.InsecureSkipVerify,
@@ -108,7 +126,7 @@ func (r *Reader) FetchRecentUnread(ctx context.Context, maxCount int) ([]Message
 		return fmt.Sprintf("A%03d", tagIdx)
 	}
 
-	// 1. Read initial server greeting
+	// 1. Read initial greeting
 	_, err = tp.ReadLine()
 	if err != nil {
 		return nil, fmt.Errorf("erro lendo saudação do servidor: %w", err)
@@ -124,7 +142,6 @@ func (r *Reader) FetchRecentUnread(ctx context.Context, maxCount int) ([]Message
 		return nil, fmt.Errorf("autenticação recusada: %w", err)
 	}
 
-	// Ensure clean LOGOUT on return
 	defer func() {
 		logoutTag := nextTag()
 		_ = tp.PrintfLine("%s LOGOUT", logoutTag)
@@ -135,48 +152,64 @@ func (r *Reader) FetchRecentUnread(ctx context.Context, maxCount int) ([]Message
 	if err := tp.PrintfLine("%s EXAMINE INBOX", examineTag); err != nil {
 		return nil, fmt.Errorf("examine inbox: %w", err)
 	}
-	if err := waitForTagOK(tp, examineTag); err != nil {
-		return nil, fmt.Errorf("abertura somente-leitura da caixa de entrada: %w", err)
-	}
 
-	// 4. Search for UNSEEN messages first
-	searchTag := nextTag()
-	if err := tp.PrintfLine("%s SEARCH UNSEEN", searchTag); err != nil {
-		return nil, fmt.Errorf("search unseen: %w", err)
-	}
-
-	ids, err := readSearchIDs(tp, searchTag)
-	if err != nil {
-		return nil, fmt.Errorf("ler ids unseen: %w", err)
-	}
-
-	// If no unseen messages, search for the last ALL messages so the user gets context
-	if len(ids) == 0 {
-		searchAllTag := nextTag()
-		if err := tp.PrintfLine("%s SEARCH ALL", searchAllTag); err == nil {
-			ids, _ = readSearchIDs(tp, searchAllTag)
+	totalExists := 0
+	for {
+		line, err := tp.ReadLine()
+		if err != nil {
+			return nil, fmt.Errorf("examine inbox read: %w", err)
+		}
+		if strings.HasPrefix(line, examineTag+" OK") {
+			break
+		}
+		if strings.HasPrefix(line, examineTag+" NO") || strings.HasPrefix(line, examineTag+" BAD") {
+			return nil, fmt.Errorf("abertura somente-leitura recusada: %s", line)
+		}
+		// Capture * N EXISTS (e.g. * 124 EXISTS)
+		if strings.HasPrefix(line, "*") && strings.Contains(line, "EXISTS") {
+			parts := strings.Fields(line)
+			if len(parts) >= 2 {
+				if count, err := strconv.Atoi(parts[1]); err == nil {
+					totalExists = count
+				}
+			}
 		}
 	}
 
-	if len(ids) == 0 {
+	if totalExists == 0 {
 		return []MessageSummary{}, nil
 	}
 
-	// Take the most recent maxCount messages (last elements)
-	if len(ids) > maxCount {
-		ids = ids[len(ids)-maxCount:]
-	}
+	// 4. Search for UNSEEN messages
+	searchTag := nextTag()
+	_ = tp.PrintfLine("%s SEARCH UNSEEN", searchTag)
+	ids, _ := readSearchIDs(tp, searchTag)
 
-	// Reverse so newest is first
-	for i, j := 0, len(ids)-1; i < j; i, j = i+1, j-1 {
-		ids[i], ids[j] = ids[j], ids[i]
+	// If no unseen messages, use the sequence range of the newest messages directly
+	// e.g., if totalExists=100 and maxCount=5, range is 96:100.
+	// This avoids "SEARCH ALL" which returns thousands of IDs and hangs the connection!
+	if len(ids) == 0 {
+		start := totalExists - maxCount + 1
+		if start < 1 {
+			start = 1
+		}
+		for i := totalExists; i >= start; i-- {
+			ids = append(ids, strconv.Itoa(i))
+		}
+	} else {
+		// Newest first
+		if len(ids) > maxCount {
+			ids = ids[len(ids)-maxCount:]
+		}
+		for i, j := 0, len(ids)-1; i < j; i, j = i+1, j-1 {
+			ids[i], ids[j] = ids[j], ids[i]
+		}
 	}
 
 	var results []MessageSummary
 	for _, id := range ids {
 		fetchTag := nextTag()
-		// Using BODY.PEEK so the message remains UNREAD on the server!
-		fetchCmd := fmt.Sprintf("%s FETCH %s (BODY.PEEK[HEADER.FIELDS (SUBJECT FROM DATE)] BODY.PEEK[TEXT]<0.400>)", fetchTag, id)
+		fetchCmd := fmt.Sprintf("%s FETCH %s (BODY.PEEK[HEADER.FIELDS (SUBJECT FROM DATE)])", fetchTag, id)
 		if err := tp.PrintfLine("%s", fetchCmd); err != nil {
 			continue
 		}
@@ -230,7 +263,6 @@ func readSearchIDs(tp *textproto.Conn, tag string) ([]string, error) {
 
 func parseFetchResponse(tp *textproto.Conn, tag, id string) MessageSummary {
 	summary := MessageSummary{ID: id}
-	inHeaders := false
 
 	for {
 		line, err := tp.ReadLine()
@@ -238,39 +270,37 @@ func parseFetchResponse(tp *textproto.Conn, tag, id string) MessageSummary {
 			break
 		}
 
-		if strings.HasPrefix(line, tag+" OK") {
-			break
-		}
-		if strings.HasPrefix(line, tag+" NO") || strings.HasPrefix(line, tag+" BAD") {
+		if strings.HasPrefix(line, tag+" OK") || strings.HasPrefix(line, tag+" NO") || strings.HasPrefix(line, tag+" BAD") {
 			break
 		}
 
-		lower := strings.ToLower(line)
-		if strings.Contains(lower, "header.fields") {
-			inHeaders = true
+		// Handle literal length: e.g. {142}
+		trimmed := strings.TrimSpace(line)
+		literalBytes := 0
+		if strings.HasSuffix(trimmed, "}") {
+			idx := strings.LastIndex(trimmed, "{")
+			if idx != -1 {
+				numStr := trimmed[idx+1 : len(trimmed)-1]
+				if n, err := strconv.Atoi(numStr); err == nil && n > 0 {
+					literalBytes = n
+				}
+			}
+		}
+
+		if literalBytes > 0 {
+			buf := make([]byte, literalBytes)
+			_, err := io.ReadFull(tp.R, buf)
+			if err == nil {
+				headerStr := string(buf)
+				lines := strings.Split(headerStr, "\n")
+				for _, hline := range lines {
+					parseHeaderLine(hline, &summary)
+				}
+			}
 			continue
 		}
 
-		if inHeaders {
-			if strings.TrimSpace(line) == "" || strings.HasPrefix(line, ")") {
-				inHeaders = false
-				continue
-			}
-
-			if strings.HasPrefix(lower, "subject:") {
-				summary.Subject = cleanHeaderValue(line[len("subject:"):])
-			} else if strings.HasPrefix(lower, "from:") {
-				summary.From = cleanHeaderValue(line[len("from:"):])
-			} else if strings.HasPrefix(lower, "date:") {
-				summary.Date = cleanHeaderValue(line[len("date:"):])
-			}
-		} else if !strings.HasPrefix(line, "*") && summary.Snippet == "" && strings.TrimSpace(line) != "" {
-			snippet := strings.TrimSpace(line)
-			if len(snippet) > 200 {
-				snippet = snippet[:200]
-			}
-			summary.Snippet = snippet
-		}
+		parseHeaderLine(line, &summary)
 	}
 
 	if summary.Subject == "" {
@@ -283,10 +313,23 @@ func parseFetchResponse(tp *textproto.Conn, tag, id string) MessageSummary {
 	return summary
 }
 
-func cleanHeaderValue(val string) string {
+func parseHeaderLine(line string, summary *MessageSummary) {
+	lower := strings.ToLower(line)
+	if strings.HasPrefix(lower, "subject:") && summary.Subject == "" {
+		summary.Subject = decodeHeader(line[len("subject:"):])
+	} else if strings.HasPrefix(lower, "from:") && summary.From == "" {
+		summary.From = decodeHeader(line[len("from:"):])
+	} else if strings.HasPrefix(lower, "date:") && summary.Date == "" {
+		summary.Date = strings.TrimSpace(line[len("date:"):])
+	}
+}
+
+func decodeHeader(val string) string {
 	val = strings.TrimSpace(val)
-	// Basic RFC 2047 decode if needed or clean quotes
 	val = strings.Trim(val, "\"")
+	if decoded, err := wordDecoder.DecodeHeader(val); err == nil && decoded != "" {
+		return strings.TrimSpace(decoded)
+	}
 	return val
 }
 

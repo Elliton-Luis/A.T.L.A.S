@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"strings"
+	"time"
 
 	"atlas/pkg/database"
 	"atlas/pkg/nlu"
@@ -15,15 +16,20 @@ type LLMClient interface {
 }
 
 // CurateEmails compiles email summaries and asks the LLM to highlight only what is truly important or interesting.
+// If the LLM is slow or unavailable, it falls back instantly to a clean structured executive digest.
 func CurateEmails(ctx context.Context, llm LLMClient, emails []MessageSummary) (string, error) {
 	if len(emails) == 0 {
-		return "📭 Sua caixa de entrada não tem novos e-mails não lidos no momento.", nil
+		return "📭 Sua caixa de entrada não tem novos e-mails no momento.", nil
 	}
 
 	var sb strings.Builder
 	for i, m := range emails {
-		sb.WriteString(fmt.Sprintf("%d. De: %s\n   Assunto: %s\n   Data: %s\n   Trecho: %s\n\n", i+1, m.From, m.Subject, m.Date, m.Snippet))
+		sb.WriteString(fmt.Sprintf("%d. De: %s\n   Assunto: %s\n   Data: %s\n\n", i+1, m.From, m.Subject, m.Date))
 	}
+
+	// Try quick AI analysis with a strict 6-second timeout to avoid serverless drops
+	aiCtx, cancel := context.WithTimeout(ctx, 6*time.Second)
+	defer cancel()
 
 	prompt := fmt.Sprintf(`Você é o assistente executivo pessoal ATLAS.
 Analise os e-mails recentes da caixa de entrada do usuário abaixo:
@@ -36,17 +42,19 @@ Sua missão:
 3. Se todos forem irrelevantes/promocionais, diga isso claramente de forma executiva.
 4. Mantenha o formato limpo e elegante em tópicos com marcadores.`, sb.String())
 
-	resp, err := llm.DeepAnalyze(ctx, prompt, nil)
-	if err != nil {
-		// Fallback to simple listing if LLM is unavailable
-		var fallback strings.Builder
-		fallback.WriteString(fmt.Sprintf("📬 *E-mails Recentes (%d encontrados):*\n\n", len(emails)))
-		for _, m := range emails {
-			fallback.WriteString(fmt.Sprintf("• *%s*\n  _De: %s_\n", m.Subject, m.From))
+	if llm != nil {
+		resp, err := llm.DeepAnalyze(aiCtx, prompt, nil)
+		if err == nil && resp != nil && strings.TrimSpace(resp.Text) != "" {
+			header := fmt.Sprintf("📬 *Radar de E-mails ATLAS* `(Somente Leitura • %d mensagens analisadas)`\n\n", len(emails))
+			return header + strings.TrimSpace(nlu.SanitizeHumanResponse(resp.Text)), nil
 		}
-		return strings.TrimSpace(fallback.String()), nil
 	}
 
-	header := fmt.Sprintf("📬 *Radar de E-mails ATLAS* `(Somente Leitura • %d mensagens analisadas)`\n\n", len(emails))
-	return header + strings.TrimSpace(nlu.SanitizeHumanResponse(resp.Text)), nil
+	// Fast executive fallback (Zero tokens / <1ms)
+	var fallback strings.Builder
+	fallback.WriteString(fmt.Sprintf("📬 *Radar de E-mails ATLAS* `(Somente Leitura • %d mensagens)`\n\n", len(emails)))
+	for _, m := range emails {
+		fallback.WriteString(fmt.Sprintf("• *%s*\n  _De: %s_\n", m.Subject, m.From))
+	}
+	return strings.TrimSpace(fallback.String()), nil
 }

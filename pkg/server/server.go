@@ -964,6 +964,26 @@ func (s *Server) executeAppAction(ctx context.Context, intent *nlu.IntentResult)
 		}
 		return curated
 
+	case "executar_codigo", "executar_python", "python":
+		code := strings.TrimSpace(intent.Termo)
+		if code == "" {
+			code = strings.TrimSpace(intent.Conteudo)
+		}
+		if code == "" {
+			return "⚠️ Por favor, forneça o código Python a ser executado."
+		}
+		code = strings.TrimPrefix(code, "```python")
+		code = strings.TrimPrefix(code, "```py")
+		code = strings.TrimPrefix(code, "```")
+		code = strings.TrimSuffix(code, "```")
+		code = strings.TrimSpace(code)
+
+		res, err := s.interpreter.RunPython(ctx, code)
+		if err != nil {
+			return fmt.Sprintf("⚠️ Falha ao executar script Python: %v", err)
+		}
+		return res.FormatTelegramHUD()
+
 	case "resumir_link":
 		link := intent.URL
 		if link == "" {
@@ -2108,11 +2128,31 @@ func matchFastPath(text string) (string, bool) {
 	}
 
 	// 1.1 Ferramentas Executivas Globais (Python Sandbox, Web Crawler & Swarm)
-	if strings.HasPrefix(clean, "py ") {
+	if strings.Contains(text, "```python") || strings.Contains(text, "```py") {
+		// Bloco de código python formatado
+		code := text
+		if idx := strings.Index(code, "```python"); idx != -1 {
+			code = code[idx+len("```python"):]
+		} else if idx := strings.Index(code, "```py"); idx != -1 {
+			code = code[idx+len("```py"):]
+		}
+		if endIdx := strings.LastIndex(code, "```"); endIdx != -1 {
+			code = code[:endIdx]
+		}
+		if strings.TrimSpace(code) != "" {
+			return "/py " + strings.TrimSpace(code), true
+		}
+	}
+	if strings.HasPrefix(clean, "py ") || strings.HasPrefix(clean, "py:") {
 		return "/py " + strings.TrimSpace(text[len("py "):]), true
 	}
-	if strings.HasPrefix(clean, "python ") {
+	if strings.HasPrefix(clean, "python ") || strings.HasPrefix(clean, "python:") {
 		return "/py " + strings.TrimSpace(text[len("python "):]), true
+	}
+	for _, p := range []string{"executar python ", "rodar python ", "executa python ", "roda python ", "executar script ", "rodar script ", "executa script ", "roda script "} {
+		if strings.HasPrefix(clean, p) {
+			return "/py " + strings.TrimSpace(text[len(p):]), true
+		}
 	}
 	if strings.HasPrefix(clean, "crawl ") {
 		return "/crawl " + strings.TrimSpace(text[len("crawl "):]), true
@@ -2140,8 +2180,12 @@ func matchFastPath(text string) (string, bool) {
 	}
 
 	// E-mail (somente leitura e curadoria de mensagens)
-	if strings.Contains(clean, "email") || strings.Contains(clean, "inbox") || strings.Contains(clean, "caixa de entrada") || strings.Contains(clean, "correio") {
-		if !strings.Contains(clean, "meu email e ") && !strings.Contains(clean, "meu email:") && !strings.Contains(clean, "mudar email") {
+	emailTerm := strings.Contains(clean, "email") || strings.Contains(clean, "e-mail") || strings.Contains(clean, "e mail") ||
+		strings.Contains(clean, "inbox") || strings.Contains(clean, "caixa de entrada") || strings.Contains(clean, "correio")
+	if emailTerm {
+		isConfigIntent := strings.Contains(clean, "meu email e ") || strings.Contains(clean, "meu email:") ||
+			strings.Contains(clean, "mudar email") || strings.Contains(clean, "alterar email") || strings.Contains(clean, "trocar email")
+		if !isConfigIntent {
 			return "/emails", true
 		}
 	}

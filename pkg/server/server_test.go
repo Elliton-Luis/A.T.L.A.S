@@ -365,6 +365,8 @@ func TestMatchFastPathPriorities(t *testing.T) {
 		{"sonar df -h", "/sonar df -h", true},
 		{"py print(42)", "/py print(42)", true},
 		{"python import sys; print(sys.version)", "/py import sys; print(sys.version)", true},
+		{"executar python print(99)", "/py print(99)", true},
+		{"```python\nprint('hello')\n```", "/py print('hello')", true},
 		{"crawl https://example.com", "/crawl https://example.com", true},
 		{"swarm Qual a melhor arquitetura?", "/swarm Qual a melhor arquitetura?", true},
 		{"conselho Devo aceitar a proposta?", "/swarm Devo aceitar a proposta?", true},

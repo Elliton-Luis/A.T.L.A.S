@@ -171,6 +171,12 @@ var canonicalMap = map[string]string{
 	"quitado": "pagar",
 	"liquidar": "pagar",
 	"baixar":  "pagar",
+
+	// Código e Script -> "python"
+	"python": "python",
+	"py":     "python",
+	"script": "python",
+	"codigo": "python",
 }
 
 // RemoveAccents converte caracteres acentuados para equivalentes ASCII simples.

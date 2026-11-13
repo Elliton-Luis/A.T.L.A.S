@@ -36,6 +36,24 @@ print(f"PI={math.pi:.4f}")
 	}
 }
 
+func TestInterpreterWandboxCloudSandbox(t *testing.T) {
+	runner := NewRunner(nil)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
+	defer cancel()
+
+	code := `print("ATLAS WANDBOX PYTHON RUNNING")`
+	res, err := runner.runWandboxPython(ctx, code)
+	if err != nil {
+		t.Logf("Wandbox network skip or error: %v", err)
+		return
+	}
+
+	if !res.Success || !strings.Contains(res.Output, "ATLAS WANDBOX PYTHON RUNNING") {
+		t.Errorf("unexpected wandbox output: %s (err: %s)", res.Output, res.Error)
+	}
+}
+
 func TestInterpreterBash(t *testing.T) {
 	runner := NewRunner(nil)
 
