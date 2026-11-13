@@ -43,4 +43,12 @@ func TestCanonicalizeSynonyms(t *testing.T) {
 	if !HasPair(tokensCal, "ver", "calendario") {
 		t.Errorf("expected tokens to contain 'ver' and 'calendario', got: %v", tokensCal)
 	}
+
+	// 6. Sinônimos de Santo e Versículo
+	if CanonicalizeWord("santododia") != "santo" || CanonicalizeWord("padroeiro") != "santo" {
+		t.Errorf("expected santo canonicalization")
+	}
+	if CanonicalizeWord("versiculo") != "versiculo" || CanonicalizeWord("biblia") != "versiculo" || CanonicalizeWord("vulgata") != "versiculo" {
+		t.Errorf("expected versiculo canonicalization")
+	}
 }

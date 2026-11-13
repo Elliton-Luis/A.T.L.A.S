@@ -352,9 +352,9 @@ Aceite variações naturais como: "marque", "anote", "agende", "crie um compromi
 8. Para ações do app, buscas e exclusões ("delete o dentista", "apague a reunião", "delete isso", "cancele o último", "apagar tudo", "limpar tudo"):
 {
   "tipo": "acao",
-  "acao": "ler_emails" (para checar a caixa de entrada, ler e-mails ou resumir o que há de interessante), "apagar_evento" (para apagar 1 evento por nome ou "isso"), "apagar_rotina" (para apagar 1 rotina/lembrete), "limpar_agenda" (apagar todos os eventos), "limpar_lembretes" (apagar todos os lembretes), "limpar_tudo" (apagar agenda E lembretes), "liturgia", "noticias", "resumir_link", "alterar_rotina", "toggle_rotina", "concluir_evento", "atualizar_meta", "fazer_backup", "listar_agenda", "ver_calendario", "listar_lembretes", "ver_perfil",
+  "acao": "santo_do_dia" (para consultar o Santo do Dia católico, história e oração), "versiculo_biblico" (para buscar versículos na Bíblia Católica com Vulgata Latina), "ler_emails" (para checar a caixa de entrada, ler e-mails ou resumir o que há de interessante), "apagar_evento" (para apagar 1 evento por nome ou "isso"), "apagar_rotina" (para apagar 1 rotina/lembrete), "limpar_agenda" (apagar todos os eventos), "limpar_lembretes" (apagar todos os lembretes), "limpar_tudo" (apagar agenda E lembretes), "liturgia", "noticias", "resumir_link", "alterar_rotina", "toggle_rotina", "concluir_evento", "atualizar_meta", "fazer_backup", "listar_agenda", "ver_calendario", "listar_lembretes", "ver_perfil",
   "id": 0,
-  "termo": "palavra-chave" (ex: "dentista", "reuniao", ou "isso" se for para apagar o último criado),
+  "termo": "palavra-chave ou referencia" (ex: "dentista", "reuniao", "Joao 3:16", "Sl 23", ou "isso" se for para apagar o último criado),
   "url": "https://...",
   "horario": "HH:MM",
   "progresso": 80

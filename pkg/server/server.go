@@ -14,6 +14,7 @@ import (
 
 	"atlas/pkg/calculator"
 	"atlas/pkg/calendar"
+	"atlas/pkg/catholic"
 	"atlas/pkg/config"
 	"atlas/pkg/crawler"
 	"atlas/pkg/database"
@@ -850,6 +851,23 @@ func (s *Server) createEventoFromIntent(ctx context.Context, intent *nlu.IntentR
 
 func (s *Server) executeAppAction(ctx context.Context, intent *nlu.IntentResult) string {
 	switch intent.Acao {
+	case "santo_do_dia", "santo":
+		santoText, err := catholic.FetchSantoDoDia(ctx)
+		if err != nil {
+			log.Printf("[Erro Santo] %v\n", err)
+			return "⚠️ Não foi possível carregar as informações do Santo do Dia no momento."
+		}
+		return santoText
+
+	case "versiculo_biblico", "versiculo", "biblia":
+		ref := intent.Termo
+		passageText, err := catholic.FetchPassage(ctx, ref)
+		if err != nil {
+			log.Printf("[Erro Versículo] %v\n", err)
+			return fmt.Sprintf("⚠️ Erro ao consultar a Bíblia: %v", err)
+		}
+		return passageText
+
 	case "liturgia":
 		liturgiaText, err := web.FetchLiturgiaDiaria(ctx)
 		if err != nil {
@@ -1130,6 +1148,8 @@ func (s *Server) handleCommand(ctx context.Context, chatID int64, cmdText string
 • 🔍 */ideia <id>* — Ler a suma acumulada completa de uma ideia
 • 🧠 */perfil* — Ver fatos e preferências que o ATLAS memorizou sobre você
 • 📖 */liturgia* — Liturgia diária católica completa com link
+• 🌟 */santo* — Santo do dia católico, história e oração
+• 📜 */versiculo <passagem>* — Bíblia Católica com Vulgata Latina (ambas)
 • 📰 */noticias <tema>* — Buscar notícias recentes na internet com links
 • ⏰ */lembretes* — Ver mensagens diárias programadas
 • 🗑️ */apagar <id>* — Apagar uma programação diária (ex: /apagar 3)
@@ -1158,6 +1178,26 @@ func (s *Server) handleCommand(ctx context.Context, chatID int64, cmdText string
 		text, err := web.FetchLiturgiaDiaria(ctx)
 		if err != nil {
 			_ = s.tg.SendMessage(ctx, chatID, "⚠️ Erro ao consultar a liturgia diária.")
+			return
+		}
+		_ = s.tg.SendMessage(ctx, chatID, text)
+
+	case "/santo":
+		text, err := catholic.FetchSantoDoDia(ctx)
+		if err != nil {
+			_ = s.tg.SendMessage(ctx, chatID, "⚠️ Erro ao consultar o Santo do Dia.")
+			return
+		}
+		_ = s.tg.SendMessage(ctx, chatID, text)
+
+	case "/versiculo", "/biblia":
+		ref := ""
+		if len(parts) >= 2 {
+			ref = strings.Join(parts[1:], " ")
+		}
+		text, err := catholic.FetchPassage(ctx, ref)
+		if err != nil {
+			_ = s.tg.SendMessage(ctx, chatID, fmt.Sprintf("⚠️ Erro ao buscar passagem bíblica: %v", err))
 			return
 		}
 		_ = s.tg.SendMessage(ctx, chatID, text)
@@ -1844,7 +1884,31 @@ func matchFastPath(text string) (string, bool) {
 		}
 	}
 
-	// 3. Liturgia / Evangelho (Antes de 'hoje' para capturar 'liturgia de hoje')
+	// 3. Santo do Dia, Bíblia Católica & Vulgata, Liturgia
+	if synonyms.MatchCanonical(tokens, "santo") || strings.Contains(clean, "santo do dia") || strings.Contains(clean, "santo de hoje") ||
+		strings.Contains(clean, "qual o santo") || strings.Contains(clean, "quem e o santo") || strings.Contains(clean, "padroeiro de hoje") {
+		return "/santo", true
+	}
+
+	if synonyms.MatchCanonical(tokens, "versiculo") || strings.Contains(clean, "versiculo") || strings.Contains(clean, "vulgata") ||
+		strings.Contains(clean, "passagem biblica") || strings.HasPrefix(clean, "biblia") {
+		trimmedRef := clean
+		for _, prefix := range []string{"versiculo do dia", "versiculo de hoje", "versiculo aleatorio", "me de um versiculo", "leia o versiculo", "versiculo", "biblia", "passagem biblica", "vulgata de", "vulgata"} {
+			trimmedRef = strings.TrimSpace(strings.TrimPrefix(trimmedRef, prefix))
+		}
+		if trimmedRef != "" {
+			return "/versiculo " + trimmedRef, true
+		}
+		return "/versiculo", true
+	}
+
+	// Referência bíblica direta (ex: "João 3:16", "Sl 23:1", "Mt 6:9-13", "Sabedoria 3:1")
+	if clean != "hoje" && clean != "dia" && clean != "aleatorio" {
+		if _, _, _, _, err := catholic.ParseReference(clean); err == nil && len(tokens) <= 5 && !strings.Contains(clean, "marcar") && !strings.Contains(clean, "agendar") {
+			return "/versiculo " + clean, true
+		}
+	}
+
 	if strings.Contains(clean, "liturgia") || strings.Contains(clean, "evangelho") {
 		return "/liturgia", true
 	}

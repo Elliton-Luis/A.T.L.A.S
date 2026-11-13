@@ -116,13 +116,29 @@ var canonicalMap = map[string]string{
 	"geral":  "todo",
 
 	// E-mail e Caixa de Entrada -> "email"
-	"email":    "email",
-	"emails":   "email",
-	"e-mail":   "email",
-	"e-mails":  "email",
-	"inbox":    "email",
-	"correio":  "email",
+	"email":     "email",
+	"emails":    "email",
+	"e-mail":    "email",
+	"e-mails":   "email",
+	"inbox":     "email",
+	"correio":   "email",
 	"mensagens": "email",
+
+	// Santo do Dia -> "santo"
+	"santo":      "santo",
+	"santos":     "santo",
+	"santododia": "santo",
+	"padroeiro":  "santo",
+	"padroeira":  "santo",
+
+	// Bíblia Católica e Vulgata -> "versiculo"
+	"versiculo":  "versiculo",
+	"versiculos": "versiculo",
+	"versinho":   "versiculo",
+	"biblia":     "versiculo",
+	"biblias":    "versiculo",
+	"passagem":   "versiculo",
+	"vulgata":    "versiculo",
 }
 
 // RemoveAccents converte caracteres acentuados para equivalentes ASCII simples.
