@@ -147,6 +147,30 @@ var canonicalMap = map[string]string{
 	"completas":        "horas",
 	"oficio":           "horas",
 	"liturgiadashoras": "horas",
+
+	// Contas, Cartões, Assinaturas -> "conta"
+	"conta":       "conta",
+	"contas":      "conta",
+	"fatura":      "conta",
+	"faturas":     "conta",
+	"boleto":      "conta",
+	"boletos":     "conta",
+	"cartao":      "conta",
+	"cartoes":     "conta",
+	"assinatura":  "conta",
+	"assinaturas": "conta",
+	"mensalidade": "conta",
+
+	// Pagamentos / Baixas -> "pagar"
+	"pagar":   "pagar",
+	"paguei":  "pagar",
+	"pago":    "pagar",
+	"paga":    "pagar",
+	"quitei":  "pagar",
+	"quite":   "pagar",
+	"quitado": "pagar",
+	"liquidar": "pagar",
+	"baixar":  "pagar",
 }
 
 // RemoveAccents converte caracteres acentuados para equivalentes ASCII simples.

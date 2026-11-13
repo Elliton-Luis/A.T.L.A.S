@@ -52,8 +52,11 @@ type IntentResult struct {
 	Horario                   string `json:"horario,omitempty"`
 	Nome                      string `json:"nome,omitempty"`
 	Mensagem                  string `json:"mensagem,omitempty"`
-	URL                       string `json:"url,omitempty"`
-	SubstituirEventoID        int64  `json:"substituir_evento_id,omitempty"`
+	URL                       string  `json:"url,omitempty"`
+	SubstituirEventoID        int64   `json:"substituir_evento_id,omitempty"`
+	DiaVencimento             int     `json:"dia_vencimento,omitempty"`
+	Valor                     float64 `json:"valor,omitempty"`
+	Categoria                 string  `json:"categoria,omitempty"`
 
 	// Token usage telemetry
 	PromptTokens     int `json:"-"`
@@ -349,12 +352,15 @@ Aceite variações naturais como: "marque", "anote", "agende", "crie um compromi
   "mensagem": "Mensagem exata a ser disparada todo dia"
 }
 
-8. Para ações do app, buscas e exclusões ("delete o dentista", "apague a reunião", "delete isso", "cancele o último", "apagar tudo", "limpar tudo"):
+8. Para ações do app, contas/cartões/assinaturas, buscas e exclusões ("anotar cartão dia 10", "paguei a netflix", "quais contas vencem?", "delete o dentista", "delete isso"):
 {
   "tipo": "acao",
-  "acao": "liturgia_das_horas" (para Laudes, Vésperas, Completas ou Ofício das Leituras), "santo_do_dia" (para consultar o Santo do Dia católico, história e oração), "versiculo_biblico" (para buscar versículos na Bíblia Católica com Vulgata Latina), "ler_emails" (para checar a caixa de entrada, ler e-mails ou resumir o que há de interessante), "apagar_evento" (para apagar 1 evento por nome ou "isso"), "apagar_rotina" (para apagar 1 rotina/lembrete), "limpar_agenda" (apagar todos os eventos), "limpar_lembretes" (apagar todos os lembretes), "limpar_tudo" (apagar agenda E lembretes), "liturgia", "noticias", "resumir_link", "alterar_rotina", "toggle_rotina", "concluir_evento", "atualizar_meta", "fazer_backup", "listar_agenda", "ver_calendario", "listar_lembretes", "ver_perfil",
+  "acao": "cadastrar_conta" (para cadastrar conta/cartão/assinatura com vencimento contínuo 3 dias antes), "listar_contas" (para listar contas e próximos vencimentos), "pagar_conta" (marcar conta/cartão/fatura como paga), "apagar_conta" (remover conta do monitoramento), "liturgia_das_horas" (para Laudes, Vésperas, Completas ou Ofício das Leituras), "santo_do_dia" (para consultar o Santo do Dia católico, história e oração), "versiculo_biblico" (para buscar versículos na Bíblia Católica com Vulgata Latina), "ler_emails" (para checar a caixa de entrada, ler e-mails ou resumir o que há de interessante), "apagar_evento" (para apagar 1 evento por nome ou "isso"), "apagar_rotina" (para apagar 1 rotina/lembrete), "limpar_agenda" (apagar todos os eventos), "limpar_lembretes" (apagar todos os lembretes), "limpar_tudo" (apagar agenda E lembretes), "liturgia", "noticias", "resumir_link", "alterar_rotina", "toggle_rotina", "concluir_evento", "atualizar_meta", "fazer_backup", "listar_agenda", "ver_calendario", "listar_lembretes", "ver_perfil",
   "id": 0,
-  "termo": "palavra-chave ou referencia" (ex: "dentista", "reuniao", "Joao 3:16", "Sl 23", ou "isso" se for para apagar o último criado),
+  "termo": "palavra-chave ou nome da conta" (ex: "cartao nubank", "netflix", "aluguel", "dentista", "Joao 3:16"),
+  "dia_vencimento": 10,
+  "valor": 150.00,
+  "categoria": "cartao" ou "assinatura" ou "boleto" ou "outros",
   "url": "https://...",
   "horario": "HH:MM",
   "progresso": 80

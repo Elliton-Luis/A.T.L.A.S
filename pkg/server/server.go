@@ -8,6 +8,7 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"regexp"
 	"strconv"
 	"strings"
 	"time"
@@ -868,6 +869,54 @@ func (s *Server) executeAppAction(ctx context.Context, intent *nlu.IntentResult)
 		}
 		return passageText
 
+	case "cadastrar_conta":
+		desc := intent.Termo
+		if desc == "" {
+			desc = intent.Descricao
+		}
+		dia := intent.DiaVencimento
+		if dia <= 0 {
+			dia = 10
+		}
+		cat := intent.Categoria
+		if cat == "" {
+			cat = "outros"
+		}
+		id, err := s.db.InsertConta(ctx, desc, dia, nil, intent.Valor, 1, cat)
+		if err != nil {
+			return fmt.Sprintf("⚠️ Falha ao cadastrar conta: %v", err)
+		}
+		valorStr := "Não informado"
+		if intent.Valor > 0 {
+			valorStr = fmt.Sprintf("R$ %.2f", intent.Valor)
+		}
+		return fmt.Sprintf("💳 *Conta Cadastrada com Sucesso! [ID: %d]*\n\n📌 *Conta:* %s\n📅 *Vencimento:* Todo dia %02d de cada mês\n💰 *Valor:* %s\n🔔 *Regra de Notificação:* Avisos contínuos a partir de **3 dias antes** (D-3, D-2, D-1 e no dia do vencimento).",
+			id, desc, dia, valorStr)
+
+	case "listar_contas", "contas":
+		return s.formatContasList(ctx)
+
+	case "pagar_conta", "baixar_conta":
+		term := intent.Termo
+		now := time.Now().In(s.cfg.Location)
+		conta, err := s.db.FindContaByName(ctx, term)
+		if err != nil || conta == nil {
+			return fmt.Sprintf("⚠️ Conta '%s' não encontrada. Digite /contas para ver suas contas cadastradas.", term)
+		}
+		currMonth := now.Format("2006-01")
+		if err := s.db.MarkContaPaid(ctx, conta.ID, currMonth); err != nil {
+			return fmt.Sprintf("⚠️ Erro ao registrar pagamento: %v", err)
+		}
+		return fmt.Sprintf("✅ *Conta Marcada como Paga!*\n\n📌 *Conta:* %s\n📅 *Mês de Referência:* %s\n🎉 Não enviarei mais avisos desta conta até o próximo mês!",
+			conta.Descricao, currMonth)
+
+	case "apagar_conta":
+		delName, err := s.db.DeleteContaByName(ctx, intent.Termo)
+		if err != nil {
+			return fmt.Sprintf("⚠️ Não foi possível apagar a conta '%s': %v", intent.Termo, err)
+		}
+		return fmt.Sprintf("🗑️ Conta *%s* removida do monitoramento de vencimentos.", delName)
+
 	case "liturgia_das_horas", "horas":
 		hourName := intent.Termo
 		horasText, err := catholic.FetchLiturgiaDasHoras(ctx, hourName, s.cfg.Location)
@@ -1160,6 +1209,9 @@ func (s *Server) handleCommand(ctx context.Context, chatID int64, cmdText string
 • 🌟 */santo* — Santo do dia católico, história e oração
 • 📜 */versiculo <passagem>* — Bíblia Católica com Vulgata Latina (ambas)
 • ⛪ */horas [hora]* — Liturgia das Horas (opcional: */horas ativar* ou */horas desativar*)
+• 💳 */contas* — Suas contas, faturas e assinaturas (avisa 3 dias antes)
+• 💰 */pagar <nome>* — Baixar conta como paga neste mês
+• ➕ */conta <nome> dia <dia> [valor]* — Cadastrar nova conta
 • 📰 */noticias <tema>* — Buscar notícias recentes na internet com links
 • ⏰ */lembretes* — Ver mensagens diárias programadas
 • 🗑️ */apagar <id>* — Apagar uma programação diária (ex: /apagar 3)
@@ -1295,6 +1347,89 @@ func (s *Server) handleCommand(ctx context.Context, chatID int64, cmdText string
 			_ = s.tg.SendMessage(ctx, chatID, text)
 			return
 		}
+
+	case "/contas":
+		msg := s.formatContasList(ctx)
+		_ = s.tg.SendMessage(ctx, chatID, msg)
+
+	case "/conta":
+		if len(parts) < 2 {
+			_ = s.tg.SendMessage(ctx, chatID, "⚠️ Uso: `/conta <nome> dia <dia> [valor]`\nEx: `/conta Netflix dia 10 55.90` ou `/conta Cartão Nubank dia 15`")
+			return
+		}
+		raw := strings.Join(parts[1:], " ")
+		desc := raw
+		dia := 10
+		var valor float64
+
+		reDia := regexp.MustCompile(`(?i)(?:dia\s+|vence\s+|todo\s+dia\s+)(\d{1,2})`)
+		if m := reDia.FindStringSubmatch(raw); len(m) >= 2 {
+			if d, err := strconv.Atoi(m[1]); err == nil && d >= 1 && d <= 31 {
+				dia = d
+			}
+			desc = strings.TrimSpace(reDia.ReplaceAllString(desc, ""))
+		}
+
+		reVal := regexp.MustCompile(`(?i)(?:r\$\s*|valor\s*)?(\d+(?:[.,]\d{2})?)`)
+		if m := reVal.FindStringSubmatch(desc); len(m) >= 2 {
+			valStr := strings.ReplaceAll(m[1], ",", ".")
+			if v, err := strconv.ParseFloat(valStr, 64); err == nil {
+				valor = v
+				desc = strings.TrimSpace(reVal.ReplaceAllString(desc, ""))
+			}
+		}
+
+		if desc == "" {
+			desc = "Conta Mensal"
+		}
+
+		id, err := s.db.InsertConta(ctx, desc, dia, nil, valor, 1, "outros")
+		if err != nil {
+			_ = s.tg.SendMessage(ctx, chatID, fmt.Sprintf("⚠️ Erro ao cadastrar conta: %v", err))
+			return
+		}
+
+		valorStr := "Não informado"
+		if valor > 0 {
+			valorStr = fmt.Sprintf("R$ %.2f", valor)
+		}
+		msg := fmt.Sprintf("💳 *Conta Cadastrada! [ID: %d]*\n\n📌 *Conta:* %s\n📅 *Vencimento:* Todo dia %02d\n💰 *Valor:* %s\n🔔 *Avisos:* 3 dias antes (D-3, D-2, D-1 e no dia do vencimento)!",
+			id, desc, dia, valorStr)
+		_ = s.tg.SendMessage(ctx, chatID, msg)
+
+	case "/pagar":
+		if len(parts) < 2 {
+			_ = s.tg.SendMessage(ctx, chatID, "⚠️ Uso: `/pagar <nome ou ID da conta>` (ex: `/pagar netflix` ou `/pagar nubank`)")
+			return
+		}
+		term := strings.Join(parts[1:], " ")
+		now := time.Now().In(s.cfg.Location)
+		conta, err := s.db.FindContaByName(ctx, term)
+		if err != nil || conta == nil {
+			_ = s.tg.SendMessage(ctx, chatID, fmt.Sprintf("⚠️ Nenhuma conta ativa encontrada para '%s'. Digite /contas para ver a lista.", term))
+			return
+		}
+		currMonth := now.Format("2006-01")
+		if err := s.db.MarkContaPaid(ctx, conta.ID, currMonth); err != nil {
+			_ = s.tg.SendMessage(ctx, chatID, fmt.Sprintf("⚠️ Erro ao registrar pagamento: %v", err))
+			return
+		}
+		msg := fmt.Sprintf("✅ *Conta Marcada como Paga!*\n\n📌 *Conta:* %s\n📅 *Mês de Referência:* %s\n🎉 Não enviarei mais avisos desta conta até o próximo mês!",
+			conta.Descricao, currMonth)
+		_ = s.tg.SendMessage(ctx, chatID, msg)
+
+	case "/apagar_conta":
+		if len(parts) < 2 {
+			_ = s.tg.SendMessage(ctx, chatID, "⚠️ Uso: `/apagar_conta <nome ou ID da conta>`")
+			return
+		}
+		term := strings.Join(parts[1:], " ")
+		delName, err := s.db.DeleteContaByName(ctx, term)
+		if err != nil {
+			_ = s.tg.SendMessage(ctx, chatID, fmt.Sprintf("⚠️ Não foi possível apagar a conta '%s': %v", term, err))
+			return
+		}
+		_ = s.tg.SendMessage(ctx, chatID, fmt.Sprintf("🗑️ Conta *%s* removida do monitoramento de vencimentos.", delName))
 
 	case "/noticias":
 		termo := "brasil"
@@ -1879,6 +2014,66 @@ func (s *Server) formatMonthlyCalendarView(ctx context.Context) string {
 	return sb.String()
 }
 
+func (s *Server) formatContasList(ctx context.Context) string {
+	contas, err := s.db.GetActiveContas(ctx)
+	if err != nil || len(contas) == 0 {
+		return "💳 *Contas e Assinaturas*\n\nNenhuma conta cadastrada no momento.\n\n_Para adicionar, envie:_ `/conta Netflix dia 10 55.90` _ou em linguagem natural:_ 'anotar conta nubank dia 15 valor 400'."
+	}
+
+	now := time.Now().In(s.cfg.Location)
+	currMonthStr := now.Format("2006-01")
+	todayMidnight := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, s.cfg.Location)
+
+	var sb strings.Builder
+	sb.WriteString("💳 *Contas e Assinaturas Monitoradas*\n")
+	sb.WriteString("_(Avisos contínuos a partir de 3 dias antes do vencimento)_\n\n")
+
+	for _, c := range contas {
+		year := now.Year()
+		month := now.Month()
+		day := c.DiaVencimento
+		maxDays := time.Date(year, month+1, 0, 0, 0, 0, 0, time.UTC).Day()
+		if day > maxDays {
+			day = maxDays
+		}
+		dueDate := time.Date(year, month, day, 0, 0, 0, 0, s.cfg.Location)
+		diffDays := int(dueDate.Sub(todayMidnight).Hours() / 24)
+
+		var statusBadge string
+		if c.UltimoMesPago != nil && *c.UltimoMesPago == currMonthStr {
+			statusBadge = "🟢 Pago este mês"
+		} else {
+			switch {
+			case diffDays < 0:
+				statusBadge = fmt.Sprintf("🔴 Venceu há %d dia(s)", -diffDays)
+			case diffDays == 0:
+				statusBadge = "🚨 VENCE HOJE!"
+			case diffDays == 1:
+				statusBadge = "⏳ Vence amanhã!"
+			case diffDays <= 3:
+				statusBadge = fmt.Sprintf("⚠️ Faltam %d dias", diffDays)
+			default:
+				statusBadge = fmt.Sprintf("📅 Faltam %d dias", diffDays)
+			}
+		}
+
+		valorStr := ""
+		if c.Valor > 0 {
+			valorStr = fmt.Sprintf(" — R$ %.2f", c.Valor)
+		}
+
+		sb.WriteString(fmt.Sprintf("• [%d] *%s*%s\n  🗓️ Dia %02d | Status: %s\n\n",
+			c.ID, c.Descricao, valorStr, c.DiaVencimento, statusBadge))
+	}
+
+	sb.WriteString("_Comandos úteis:_\n")
+	sb.WriteString("👉 `/pagar <nome>` — Marcar conta paga neste mês\n")
+	sb.WriteString("👉 `/apagar_conta <nome>` — Remover do monitoramento\n")
+	sb.WriteString("👉 `/conta <nome> dia <dia> [valor]` — Adicionar nova conta")
+
+	return sb.String()
+}
+
 func parseTimeFlexible(timeStr string, loc *time.Location) (time.Time, error) {
 	timeStr = strings.TrimSpace(timeStr)
 	formats := []string{
@@ -2028,6 +2223,39 @@ func matchFastPath(text string) (string, bool) {
 
 	if strings.Contains(clean, "liturgia") || strings.Contains(clean, "evangelho") {
 		return "/liturgia", true
+	}
+
+	// 3.1 Contas, Cartões, Faturas e Assinaturas (Alerta contínuo 3 dias antes)
+	if (synonyms.MatchCanonical(tokens, "conta") || strings.Contains(clean, "fatura") || strings.Contains(clean, "assinatura")) &&
+		(strings.Contains(clean, "apagar") || strings.Contains(clean, "deletar") || strings.Contains(clean, "remover")) {
+		term := clean
+		for _, prefix := range []string{"apagar conta", "deletar conta", "remover conta", "apagar", "deletar", "remover"} {
+			term = strings.TrimSpace(strings.TrimPrefix(term, prefix))
+		}
+		if term != "" {
+			return "/apagar_conta " + term, true
+		}
+	}
+
+	if clean == "contas a pagar" || clean == "contas para pagar" || clean == "contas" || clean == "minhas contas" ||
+		clean == "ver contas" || clean == "listar contas" || clean == "quais contas vencem" || clean == "faturas" || clean == "assinaturas" ||
+		((synonyms.MatchCanonical(tokens, "conta") || strings.Contains(clean, "fatura") || strings.Contains(clean, "assinatura")) && synonyms.MatchCanonical(tokens, "ver")) {
+		if !strings.Contains(clean, "anotar") && !strings.Contains(clean, "cadastrar") && !strings.Contains(clean, "nova") && !strings.Contains(clean, "adicionar") && !strings.Contains(clean, "dia") {
+			return "/contas", true
+		}
+	}
+
+	if synonyms.MatchCanonical(tokens, "pagar") {
+		term := clean
+		for _, prefix := range []string{"paguei o", "paguei a", "paguei", "pagar o", "pagar a", "pagar", "marcar como pago", "marcar como paga", "quitei o", "quitei a", "quitei", "baixar conta", "baixar a conta", "baixar"} {
+			term = strings.TrimSpace(strings.TrimPrefix(term, prefix))
+		}
+		for _, sfx := range []string{" pago", " paga", " quitado", " quitada"} {
+			term = strings.TrimSpace(strings.TrimSuffix(term, sfx))
+		}
+		if term != "" && !strings.Contains(term, "quanto") && !strings.Contains(term, "quando") && !strings.Contains(term, "como") && term != "contas a pagar" {
+			return "/pagar " + term, true
+		}
 	}
 
 	// 4. CALENDÁRIO / MÊS COMPLETO (Separado categoricamente de "hoje")

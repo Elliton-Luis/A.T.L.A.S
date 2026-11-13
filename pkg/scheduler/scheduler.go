@@ -73,8 +73,64 @@ func (e *Engine) Tick(ctx context.Context) {
 	// 2. Process Proactive Routines (User customized schedules)
 	e.processProactiveRoutines(ctx, todayStr, timeHM)
 
-	// 3. Process Daily Offsite SQLite Backup
+	// 3. Process Financial Bill Reminders (Continuous 3-day countdown: 3, 2, 1, 0 days)
+	e.processBillReminders(ctx, now)
+
+	// 4. Process Daily Offsite SQLite Backup
 	e.processDailyBackup(ctx, todayStr, timeHM)
+}
+
+func (e *Engine) processBillReminders(ctx context.Context, now time.Time) {
+	alerts, err := e.db.GetPendingBillAlerts(ctx, now)
+	if err != nil || len(alerts) == 0 {
+		return
+	}
+
+	todayStr := now.Format("2006-01-02")
+	for _, a := range alerts {
+		var title string
+		var icon string
+		switch a.DiasRestantes {
+		case 3:
+			icon = "💳"
+			title = "Aviso de Vencimento (Faltam 3 dias)"
+		case 2:
+			icon = "💳"
+			title = "Aviso de Vencimento (Faltam 2 dias)"
+		case 1:
+			icon = "⏳"
+			title = "Aviso Urgente (Vence Amanhã!)"
+		case 0:
+			icon = "🚨"
+			title = "VENCE HOJE! — Alerta de Pagamento"
+		}
+
+		valorStr := "Não informado"
+		if a.Conta.Valor > 0 {
+			valorStr = fmt.Sprintf("R$ %.2f", a.Conta.Valor)
+		}
+
+		dataVencStr := a.DataVenc.Format("02/01/2006")
+		diaSemana := diasSemanaPt[a.DataVenc.Weekday()]
+
+		msg := fmt.Sprintf("%s *%s*\n\n📌 *Conta:* %s\n📅 *Vencimento:* %s (%s)\n💰 *Valor:* %s\n\n_Já pagou? Responda: 'paguei %s' para registrar._",
+			icon, title, a.Conta.Descricao, dataVencStr, diaSemana, valorStr, a.Conta.Descricao)
+
+		if err := e.tg.SendMessage(ctx, e.cfg.TelegramChatID, msg); err == nil {
+			_ = e.db.MarkContaAlertSent(ctx, a.Conta.ID, todayStr)
+			log.Printf("[Scheduler] Alerta de conta enviado: %s (faltam %d dias)", a.Conta.Descricao, a.DiasRestantes)
+		}
+	}
+}
+
+var diasSemanaPt = map[time.Weekday]string{
+	time.Sunday:    "Domingo",
+	time.Monday:    "Segunda-feira",
+	time.Tuesday:   "Terça-feira",
+	time.Wednesday: "Quarta-feira",
+	time.Thursday:  "Quinta-feira",
+	time.Friday:    "Sexta-feira",
+	time.Saturday:  "Sábado",
 }
 
 func (e *Engine) processEventBuffers(ctx context.Context, now time.Time, nowStr string) {

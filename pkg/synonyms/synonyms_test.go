@@ -51,4 +51,12 @@ func TestCanonicalizeSynonyms(t *testing.T) {
 	if CanonicalizeWord("versiculo") != "versiculo" || CanonicalizeWord("biblia") != "versiculo" || CanonicalizeWord("vulgata") != "versiculo" {
 		t.Errorf("expected versiculo canonicalization")
 	}
+
+	// 7. Sinônimos de Contas e Pagar
+	if CanonicalizeWord("cartao") != "conta" || CanonicalizeWord("fatura") != "conta" || CanonicalizeWord("assinatura") != "conta" {
+		t.Errorf("expected conta canonicalization")
+	}
+	if CanonicalizeWord("paguei") != "pagar" || CanonicalizeWord("quitei") != "pagar" || CanonicalizeWord("pago") != "pagar" {
+		t.Errorf("expected pagar canonicalization")
+	}
 }

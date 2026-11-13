@@ -391,6 +391,13 @@ func TestMatchFastPathPriorities(t *testing.T) {
 		{"completas", "/horas completas", true},
 		{"ativar liturgia das horas", "/horas ativar", true},
 		{"desativar liturgia das horas", "/horas desativar", true},
+		{"contas", "/contas", true},
+		{"ver contas", "/contas", true},
+		{"contas a pagar", "/contas", true},
+		{"paguei o cartao", "/pagar cartao", true},
+		{"paguei a netflix", "/pagar netflix", true},
+		{"cartao nubank pago", "/pagar cartao nubank", true},
+		{"apagar conta netflix", "/apagar_conta netflix", true},
 	}
 
 	for _, tc := range testCases {

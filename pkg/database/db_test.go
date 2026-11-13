@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 )
 
 func TestDatabaseMigrationAndOperations(t *testing.T) {
@@ -222,5 +223,53 @@ func TestDatabaseMigrationAndOperations(t *testing.T) {
 
 	if _, err := db.GetPendingConfirmation(ctx, 12345); err == nil {
 		t.Fatalf("expected pending confirmation to be deleted")
+	}
+
+	// 10. Test Contas a Pagar and 3-day notification alerts
+	now := time.Date(2026, 11, 12, 10, 0, 0, 0, time.UTC) // Thursday Nov 12
+	// Due in 3 days: Nov 15 (Sunday)
+	cID1, err := db.InsertConta(ctx, "Cartão Nubank", 15, nil, 450.00, 1, "cartao")
+	if err != nil {
+		t.Fatalf("InsertConta failed: %v", err)
+	}
+
+	// Due in 1 day: Nov 13 (Friday)
+	_, err = db.InsertConta(ctx, "Assinatura Netflix", 13, nil, 55.90, 1, "assinatura")
+	if err != nil {
+		t.Fatalf("InsertConta failed: %v", err)
+	}
+
+	// Due in 10 days: Nov 22 (outside 3-day window)
+	_, err = db.InsertConta(ctx, "Aluguel", 22, nil, 1500.00, 1, "outros")
+	if err != nil {
+		t.Fatalf("InsertConta failed: %v", err)
+	}
+
+	alerts, err := db.GetPendingBillAlerts(ctx, now)
+	if err != nil {
+		t.Fatalf("GetPendingBillAlerts failed: %v", err)
+	}
+	if len(alerts) != 2 {
+		t.Fatalf("expected 2 alerts (due on 13 and 15), got %d", len(alerts))
+	}
+
+	// Mark Cartão Nubank as paid
+	if err := db.MarkContaPaid(ctx, cID1, "2026-11"); err != nil {
+		t.Fatalf("MarkContaPaid failed: %v", err)
+	}
+
+	// After paying, it should no longer alert for this month
+	alertsAfterPay, err := db.GetPendingBillAlerts(ctx, now)
+	if err != nil {
+		t.Fatalf("GetPendingBillAlerts after pay failed: %v", err)
+	}
+	if len(alertsAfterPay) != 1 || alertsAfterPay[0].Conta.Descricao != "Assinatura Netflix" {
+		t.Fatalf("expected only Netflix alert after paying Nubank, got %+v", alertsAfterPay)
+	}
+
+	// Delete by name
+	delName, err := db.DeleteContaByName(ctx, "Netflix")
+	if err != nil || delName != "Assinatura Netflix" {
+		t.Fatalf("DeleteContaByName failed: %v, deleted: %s", err, delName)
 	}
 }

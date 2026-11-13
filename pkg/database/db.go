@@ -92,6 +92,26 @@ type RotinaProativa struct {
 	CriadoEm       string
 }
 
+type ContaAPagar struct {
+	ID              int64
+	Descricao       string
+	DiaVencimento   int
+	DataEspecifica  *string
+	Valor           float64
+	Recorrente      int
+	Categoria       string
+	UltimoMesPago   *string
+	UltimoAvisoData *string
+	Ativo           int
+	CriadoEm        string
+}
+
+type ContaAlert struct {
+	Conta         ContaAPagar
+	DiasRestantes int
+	DataVenc      time.Time
+}
+
 // Open initializes the database.
 // If tursoURL is non-empty, it connects to Turso (libSQL) in the cloud.
 // Otherwise, it opens the local SQLite file in WAL mode.
@@ -253,6 +273,22 @@ func (db *DB) migrate(ctx context.Context, isRemote bool) error {
 	);
 
 	CREATE INDEX IF NOT EXISTS idx_rotinas_ativo ON rotinas_proativas(ativo, horario);
+
+	CREATE TABLE IF NOT EXISTS contas_a_pagar (
+		id INTEGER PRIMARY KEY AUTOINCREMENT,
+		descricao TEXT NOT NULL,
+		dia_vencimento INTEGER NOT NULL,
+		data_especifica TEXT,
+		valor REAL DEFAULT 0,
+		recorrente INTEGER DEFAULT 1,
+		categoria TEXT DEFAULT 'outros',
+		ultimo_mes_pago TEXT,
+		ultimo_aviso_data TEXT,
+		ativo INTEGER DEFAULT 1,
+		criado_em DATETIME DEFAULT CURRENT_TIMESTAMP
+	);
+
+	CREATE INDEX IF NOT EXISTS idx_contas_ativo ON contas_a_pagar(ativo, dia_vencimento);
 	`
 
 	if _, err := db.ExecContext(ctx, schema); err != nil {
@@ -1159,4 +1195,201 @@ func (db *DB) FindSimilarActiveEvento(ctx context.Context, desc string) (*Evento
 		}
 	}
 	return nil, nil
+}
+
+// InsertConta adds a new bill/subscription to track.
+func (db *DB) InsertConta(ctx context.Context, descricao string, diaVencimento int, dataEsp *string, valor float64, recorrente int, categoria string) (int64, error) {
+	if categoria == "" {
+		categoria = "outros"
+	}
+	res, err := db.ExecContext(ctx, `
+		INSERT INTO contas_a_pagar (descricao, dia_vencimento, data_especifica, valor, recorrente, categoria, ativo)
+		VALUES (?, ?, ?, ?, ?, ?, 1)
+	`, descricao, diaVencimento, dataEsp, valor, recorrente, categoria)
+	if err != nil {
+		return 0, err
+	}
+	return res.LastInsertId()
+}
+
+// GetAllContas returns all registered bills (active or inactive).
+func (db *DB) GetAllContas(ctx context.Context) ([]ContaAPagar, error) {
+	rows, err := db.QueryContext(ctx, `
+		SELECT id, descricao, dia_vencimento, data_especifica, valor, recorrente, categoria, ultimo_mes_pago, ultimo_aviso_data, ativo, criado_em
+		FROM contas_a_pagar
+		ORDER BY dia_vencimento ASC, id ASC
+	`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var list []ContaAPagar
+	for rows.Next() {
+		var c ContaAPagar
+		if err := rows.Scan(
+			&c.ID, &c.Descricao, &c.DiaVencimento, &c.DataEspecifica,
+			&c.Valor, &c.Recorrente, &c.Categoria,
+			&c.UltimoMesPago, &c.UltimoAvisoData, &c.Ativo, &c.CriadoEm,
+		); err != nil {
+			return nil, err
+		}
+		list = append(list, c)
+	}
+	return list, rows.Err()
+}
+
+// GetActiveContas returns active bills.
+func (db *DB) GetActiveContas(ctx context.Context) ([]ContaAPagar, error) {
+	rows, err := db.QueryContext(ctx, `
+		SELECT id, descricao, dia_vencimento, data_especifica, valor, recorrente, categoria, ultimo_mes_pago, ultimo_aviso_data, ativo, criado_em
+		FROM contas_a_pagar
+		WHERE ativo = 1
+		ORDER BY dia_vencimento ASC
+	`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var list []ContaAPagar
+	for rows.Next() {
+		var c ContaAPagar
+		if err := rows.Scan(
+			&c.ID, &c.Descricao, &c.DiaVencimento, &c.DataEspecifica,
+			&c.Valor, &c.Recorrente, &c.Categoria,
+			&c.UltimoMesPago, &c.UltimoAvisoData, &c.Ativo, &c.CriadoEm,
+		); err != nil {
+			return nil, err
+		}
+		list = append(list, c)
+	}
+	return list, rows.Err()
+}
+
+// FindContaByName finds a bill by exact or partial name.
+func (db *DB) FindContaByName(ctx context.Context, term string) (*ContaAPagar, error) {
+	term = strings.TrimSpace(term)
+	if term == "" {
+		return nil, nil
+	}
+	contas, err := db.GetActiveContas(ctx)
+	if err != nil {
+		return nil, err
+	}
+	lowerTerm := strings.ToLower(term)
+	for _, c := range contas {
+		lowerDesc := strings.ToLower(c.Descricao)
+		if lowerDesc == lowerTerm || strings.Contains(lowerDesc, lowerTerm) || strings.Contains(lowerTerm, lowerDesc) {
+			return &c, nil
+		}
+	}
+	return nil, nil
+}
+
+// MarkContaPaid records payment for the given month (e.g. "2026-11").
+func (db *DB) MarkContaPaid(ctx context.Context, id int64, anoMes string) error {
+	_, err := db.ExecContext(ctx, `
+		UPDATE contas_a_pagar
+		SET ultimo_mes_pago = ?
+		WHERE id = ?
+	`, anoMes, id)
+	return err
+}
+
+// MarkContaAlertSent records that an alert for today's date was delivered.
+func (db *DB) MarkContaAlertSent(ctx context.Context, id int64, dataHoje string) error {
+	_, err := db.ExecContext(ctx, `
+		UPDATE contas_a_pagar
+		SET ultimo_aviso_data = ?
+		WHERE id = ?
+	`, dataHoje, id)
+	return err
+}
+
+// DeleteConta deletes a bill by ID.
+func (db *DB) DeleteConta(ctx context.Context, id int64) error {
+	_, err := db.ExecContext(ctx, "DELETE FROM contas_a_pagar WHERE id = ?", id)
+	return err
+}
+
+// DeleteContaByName deletes a bill by name.
+func (db *DB) DeleteContaByName(ctx context.Context, term string) (string, error) {
+	conta, err := db.FindContaByName(ctx, term)
+	if err != nil {
+		return "", err
+	}
+	if conta == nil {
+		return "", fmt.Errorf("nenhuma conta encontrada para '%s'", term)
+	}
+	if err := db.DeleteConta(ctx, conta.ID); err != nil {
+		return "", err
+	}
+	return conta.Descricao, nil
+}
+
+// GetPendingBillAlerts calculates next due dates and returns bills that need alert (diffDays <= 3 and diffDays >= 0).
+func (db *DB) GetPendingBillAlerts(ctx context.Context, now time.Time) ([]ContaAlert, error) {
+	contas, err := db.GetActiveContas(ctx)
+	if err != nil {
+		return nil, err
+	}
+
+	todayStr := now.Format("2006-01-02")
+	currMonthStr := now.Format("2006-01")
+	todayMidnight := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, now.Location())
+
+	var alerts []ContaAlert
+	for _, c := range contas {
+		// If already paid for this month, skip
+		if c.UltimoMesPago != nil && *c.UltimoMesPago == currMonthStr {
+			continue
+		}
+		// If alert was already sent today, skip
+		if c.UltimoAvisoData != nil && *c.UltimoAvisoData == todayStr {
+			continue
+		}
+
+		// Calculate upcoming due date
+		var dueDate time.Time
+		if c.DataEspecifica != nil && *c.DataEspecifica != "" {
+			parsed, err := time.ParseInLocation("2006-01-02", *c.DataEspecifica, now.Location())
+			if err != nil {
+				continue
+			}
+			dueDate = parsed
+		} else {
+			// Monthly recurring
+			year := now.Year()
+			month := now.Month()
+			day := c.DiaVencimento
+			if day <= 0 {
+				day = 1
+			} else if day > 31 {
+				day = 31
+			}
+
+			maxDays := daysInMonth(year, month)
+			if day > maxDays {
+				day = maxDays
+			}
+			dueDate = time.Date(year, month, day, 0, 0, 0, 0, now.Location())
+		}
+
+		diffDays := int(dueDate.Sub(todayMidnight).Hours() / 24)
+
+		// 3 days before up to day 0 (3, 2, 1, 0)
+		if diffDays >= 0 && diffDays <= 3 {
+			alerts = append(alerts, ContaAlert{
+				Conta:         c,
+				DiasRestantes: diffDays,
+				DataVenc:      dueDate,
+			})
+		}
+	}
+	return alerts, nil
+}
+
+func daysInMonth(year int, month time.Month) int {
+	return time.Date(year, month+1, 0, 0, 0, 0, 0, time.UTC).Day()
 }
