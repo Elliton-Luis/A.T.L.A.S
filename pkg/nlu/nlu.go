@@ -187,6 +187,39 @@ func SanitizeHumanResponse(s string) string {
 	return strings.TrimSpace(s)
 }
 
+// buildCleanHistory ensures an alternating user/assistant history without duplicates or orphan backlogs.
+func buildCleanHistory(history []database.ChatMessage, currentInput string) []ChatMessagePayload {
+	var clean []ChatMessagePayload
+	for _, h := range history {
+		if strings.TrimSpace(h.Content) == "" {
+			continue
+		}
+		// Prevent consecutive turns of the same role (deduplicate)
+		if len(clean) > 0 && clean[len(clean)-1].Role == h.Role {
+			clean[len(clean)-1].Content = h.Content
+			continue
+		}
+		clean = append(clean, ChatMessagePayload{
+			Role:    h.Role,
+			Content: h.Content,
+		})
+	}
+
+	// Remove trailing user turn from history to prevent duplication when currentInput is added
+	if len(clean) > 0 && clean[len(clean)-1].Role == "user" {
+		clean = clean[:len(clean)-1]
+	}
+
+	if currentInput != "" {
+		clean = append(clean, ChatMessagePayload{
+			Role:    "user",
+			Content: currentInput,
+		})
+	}
+
+	return clean
+}
+
 // ParseIntent sends the user's message along with sliding history, active events and long-term memory to NLU.
 func (c *Client) ParseIntent(ctx context.Context, text, currentDatetime string, history []database.ChatMessage, userMemories []database.MemoriaUsuario, latestIdeia *database.Ideia, activeEvents []database.Evento) (*IntentResult, error) {
 	if c.groqPool.IsEmpty() && c.nvidiaPool.IsEmpty() {
@@ -338,17 +371,7 @@ Aceite variações naturais como: "marque", "anote", "agende", "crie um compromi
 	messages := []ChatMessagePayload{
 		{Role: "system", Content: systemPrompt},
 	}
-
-	for _, h := range history {
-		messages = append(messages, ChatMessagePayload{
-			Role:    h.Role,
-			Content: h.Content,
-		})
-	}
-	messages = append(messages, ChatMessagePayload{
-		Role:    "user",
-		Content: text,
-	})
+	messages = append(messages, buildCleanHistory(history, text)...)
 
 	reqPayload := ChatCompletionRequest{
 		Model:       c.groqModel,
@@ -461,10 +484,7 @@ Responda com extrema sofisticação, profundidade analítica, clareza cirúrgica
 	messages := []ChatMessagePayload{
 		{Role: "system", Content: systemPrompt},
 	}
-	for _, h := range history {
-		messages = append(messages, ChatMessagePayload{Role: h.Role, Content: h.Content})
-	}
-	messages = append(messages, ChatMessagePayload{Role: "user", Content: text})
+	messages = append(messages, buildCleanHistory(history, text)...)
 
 	payload := ChatCompletionRequest{
 		Model:       c.nvidiaModel,
@@ -503,10 +523,7 @@ Diretrizes do Perfil de Pesquisa:
 	messages := []ChatMessagePayload{
 		{Role: "system", Content: systemPrompt},
 	}
-	for _, h := range history {
-		messages = append(messages, ChatMessagePayload{Role: h.Role, Content: h.Content})
-	}
-	messages = append(messages, ChatMessagePayload{Role: "user", Content: text})
+	messages = append(messages, buildCleanHistory(history, text)...)
 
 	payload := ChatCompletionRequest{
 		Model:       c.nvidiaModel,

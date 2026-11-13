@@ -359,8 +359,8 @@ func (s *Server) processIncomingMessage(ctx context.Context, msg *telegram.Messa
 	now := time.Now().In(s.cfg.Location)
 	currentDatetime := database.FormatDateTime(now)
 
-	_ = s.db.RecordHistory(ctx, "user", inputText)
 	history, _ := s.db.GetRecentHistory(ctx, s.cfg.HistoryLimit)
+	_ = s.db.RecordHistory(ctx, "user", inputText)
 	memories, _ := s.db.GetAllUserMemories(ctx)
 	latestIdeia, _ := s.db.GetLatestActiveIdeia(ctx)
 	activeEvents, _ := s.db.GetUpcomingEvents(ctx, 10)

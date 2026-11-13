@@ -1,6 +1,7 @@
 package nlu
 
 import (
+	"atlas/pkg/database"
 	"strings"
 	"testing"
 )
@@ -31,5 +32,31 @@ func TestSanitizeHumanResponse(t *testing.T) {
 	normal := "Olá, sou o ATLAS."
 	if SanitizeHumanResponse(normal) != normal {
 		t.Errorf("clean string was modified unexpectedly")
+	}
+}
+
+func TestBuildCleanHistory(t *testing.T) {
+	// Scenario: multiple orphan user messages in a row
+	history := []database.ChatMessage{
+		{Role: "user", Content: "Olá"},
+		{Role: "user", Content: "Vou para o Rio"},
+		{Role: "assistant", Content: "Ótima viagem."},
+		{Role: "user", Content: "Nova mensagem"},
+	}
+
+	clean := buildCleanHistory(history, "Mais uma pergunta")
+	// Expected:
+	// "Vou para o Rio" (user) -> "Ótima viagem." (assistant) -> "Mais uma pergunta" (user)
+	if len(clean) != 3 {
+		t.Fatalf("expected 3 clean messages, got %d", len(clean))
+	}
+	if clean[0].Role != "user" || clean[0].Content != "Vou para o Rio" {
+		t.Errorf("unexpected first message: %+v", clean[0])
+	}
+	if clean[1].Role != "assistant" || clean[1].Content != "Ótima viagem." {
+		t.Errorf("unexpected second message: %+v", clean[1])
+	}
+	if clean[2].Role != "user" || clean[2].Content != "Mais uma pergunta" {
+		t.Errorf("unexpected third message: %+v", clean[2])
 	}
 }
