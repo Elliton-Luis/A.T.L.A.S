@@ -125,7 +125,10 @@ Tema: %s`, topic),
 			defer wg.Done()
 			subStart := time.Now()
 
-			resp, err := o.client.DeepAnalyze(ctx, rConfig.prompt, nil)
+			subCtx, cancel := context.WithTimeout(ctx, 25*time.Second)
+			defer cancel()
+
+			resp, err := o.client.DeepAnalyze(subCtx, rConfig.prompt, nil)
 			subDuration := time.Since(subStart)
 
 			if err != nil {
@@ -157,7 +160,9 @@ Tema: %s`, topic),
 	// Final Step: Synthesize Consensus
 	var perspectivesText strings.Builder
 	for _, res := range results {
-		perspectivesText.WriteString(fmt.Sprintf("[%s]: %s\n\n", res.Role, res.Perspective))
+		if res.Success {
+			perspectivesText.WriteString(fmt.Sprintf("[%s]: %s\n\n", res.Role, res.Perspective))
+		}
 	}
 
 	synthesisPrompt := fmt.Sprintf(`Você é o Coordenador Chefe (ATLAS).
@@ -166,13 +171,18 @@ Três especialistas analisaram a seguinte questão: "%s"
 Visões dos especialistas:
 %s
 
-Com base nas três perspectivas acima (fatos, viabilidade e riscos), sintetize um veredito executivo definitivo, pragmático e com recomendações claras de ação em até 3 tópicos diretos.`, topic, perspectivesText.String())
+Com base nas perspectivas acima (fatos, viabilidade e riscos), sintetize um veredito executivo definitivo, pragmático e com recomendações claras de ação em até 3 tópicos diretos.`, topic, perspectivesText.String())
 
-	consensusResp, err := o.client.DeepAnalyze(ctx, synthesisPrompt, nil)
+	synthCtx, synthCancel := context.WithTimeout(ctx, 15*time.Second)
+	defer synthCancel()
+
+	consensusResp, err := o.client.DeepAnalyze(synthCtx, synthesisPrompt, nil)
 	consensusText := ""
-	if err == nil {
+	if err == nil && consensusResp != nil {
 		consensusText = nlu.SanitizeHumanResponse(consensusResp.Text)
 		totalTokens += consensusResp.TotalTokens
+	} else {
+		consensusText = "Veredito executivo: Analise os pareceres do Pesquisador, Analista e Crítico acima para direcionar a tomada de decisão com equilíbrio entre fatos, viabilidade e mitigação de riscos."
 	}
 
 	return &Deliberation{

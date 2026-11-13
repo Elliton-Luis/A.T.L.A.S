@@ -221,7 +221,7 @@ func (s *Server) handleWebhook(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), 25*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 55*time.Second)
 	defer cancel()
 
 	s.processIncomingMessage(ctx, msg)
@@ -400,26 +400,20 @@ func (s *Server) processIncomingMessage(ctx context.Context, msg *telegram.Messa
 		waitingMsg := "🔬 *Perfil de Pesquisa Ativado (Tokens de Output Irrestritos)*\n\nCompilando síntese exaustiva, múltiplos artigos e referências completas sem cortes..."
 		_ = s.tg.SendMessage(ctx, chatID, waitingMsg)
 
-		go func(promptText string, chatHistory []database.ChatMessage) {
-			resCtx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
-			defer cancel()
+		res, err := s.nluClient.ResearchAnalyze(ctx, inputText, history)
+		if err != nil {
+			log.Printf("[Erro Modo Pesquisa] %v\n", err)
+			_ = s.tg.SendMessage(ctx, chatID, "⚠️ Houve uma instabilidade no processamento da pesquisa.")
+			return
+		}
 
-			res, err := s.nluClient.ResearchAnalyze(resCtx, promptText, chatHistory)
-			if err != nil {
-				log.Printf("[Erro Modo Pesquisa] %v\n", err)
-				_ = s.tg.SendMessage(resCtx, chatID, "⚠️ Houve uma instabilidade no processamento da pesquisa.")
-				return
-			}
+		if res.TotalTokens > 0 {
+			_ = s.db.RecordTokenUsage(ctx, res.Provider, res.Model, res.PromptTokens, res.ComplTokens, res.TotalTokens)
+		}
 
-			if res.TotalTokens > 0 {
-				_ = s.db.RecordTokenUsage(resCtx, res.Provider, res.Model, res.PromptTokens, res.ComplTokens, res.TotalTokens)
-			}
-
-			researchResponse := nlu.SanitizeHumanResponse(res.Text)
-			_ = s.tg.SendMessage(resCtx, chatID, researchResponse)
-			_ = s.db.RecordHistory(resCtx, "assistant", researchResponse)
-		}(inputText, history)
-
+		researchResponse := nlu.SanitizeHumanResponse(res.Text)
+		_ = s.tg.SendMessage(ctx, chatID, researchResponse)
+		_ = s.db.RecordHistory(ctx, "assistant", researchResponse)
 		return
 	}
 
@@ -429,26 +423,20 @@ func (s *Server) processIncomingMessage(ctx context.Context, msg *telegram.Messa
 		waitingMsg := fmt.Sprintf("⏳ *Esta solicitação exige análise aprofundada.* Acionando o núcleo de processamento inteligente da NVIDIA (Nemotron)...\n\nEnquanto isso, uma curiosidade aleatória para você:\n🦩 _%s_", curiosity)
 		_ = s.tg.SendMessage(ctx, chatID, waitingMsg)
 
-		go func(promptText string, chatHistory []database.ChatMessage) {
-			heavyCtx, cancel := context.WithTimeout(context.Background(), 75*time.Second)
-			defer cancel()
+		deepRes, err := s.nluClient.DeepAnalyze(ctx, inputText, history)
+		if err != nil {
+			log.Printf("[Erro NVIDIA Heavy] %v\n", err)
+			_ = s.tg.SendMessage(ctx, chatID, "⚠️ Houve uma instabilidade momentânea na análise da NVIDIA.")
+			return
+		}
 
-			deepRes, err := s.nluClient.DeepAnalyze(heavyCtx, promptText, chatHistory)
-			if err != nil {
-				log.Printf("[Erro NVIDIA Heavy] %v\n", err)
-				_ = s.tg.SendMessage(heavyCtx, chatID, "⚠️ Houve uma instabilidade momentânea na análise da NVIDIA.")
-				return
-			}
+		if deepRes.TotalTokens > 0 {
+			_ = s.db.RecordTokenUsage(ctx, deepRes.Provider, deepRes.Model, deepRes.PromptTokens, deepRes.ComplTokens, deepRes.TotalTokens)
+		}
 
-			if deepRes.TotalTokens > 0 {
-				_ = s.db.RecordTokenUsage(heavyCtx, deepRes.Provider, deepRes.Model, deepRes.PromptTokens, deepRes.ComplTokens, deepRes.TotalTokens)
-			}
-
-			deepResponse := nlu.SanitizeHumanResponse(deepRes.Text)
-			_ = s.tg.SendMessage(heavyCtx, chatID, deepResponse)
-			_ = s.db.RecordHistory(heavyCtx, "assistant", deepResponse)
-		}(inputText, history)
-
+		deepResponse := nlu.SanitizeHumanResponse(deepRes.Text)
+		_ = s.tg.SendMessage(ctx, chatID, deepResponse)
+		_ = s.db.RecordHistory(ctx, "assistant", deepResponse)
 		return
 	}
 
@@ -1477,25 +1465,20 @@ func (s *Server) handleCommand(ctx context.Context, chatID int64, cmdText string
 		waitingMsg := fmt.Sprintf("🔬 *Perfil de Pesquisa Ativado (Tokens de Output Irrestritos)*\n\nPesquisando a fundo sobre: *%s*...", tema)
 		_ = s.tg.SendMessage(ctx, chatID, waitingMsg)
 
-		go func(promptText string) {
-			resCtx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
-			defer cancel()
+		res, err := s.nluClient.ResearchAnalyze(ctx, tema, nil)
+		if err != nil {
+			log.Printf("[Erro Comando /pesquisa] %v\n", err)
+			_ = s.tg.SendMessage(ctx, chatID, "⚠️ Falha ao executar pesquisa aprofundada.")
+			return
+		}
 
-			res, err := s.nluClient.ResearchAnalyze(resCtx, promptText, nil)
-			if err != nil {
-				log.Printf("[Erro Comando /pesquisa] %v\n", err)
-				_ = s.tg.SendMessage(resCtx, chatID, "⚠️ Falha ao executar pesquisa aprofundada.")
-				return
-			}
+		if res.TotalTokens > 0 {
+			_ = s.db.RecordTokenUsage(ctx, res.Provider, res.Model, res.PromptTokens, res.ComplTokens, res.TotalTokens)
+		}
 
-			if res.TotalTokens > 0 {
-				_ = s.db.RecordTokenUsage(resCtx, res.Provider, res.Model, res.PromptTokens, res.ComplTokens, res.TotalTokens)
-			}
-
-			cleanResponse := nlu.SanitizeHumanResponse(res.Text)
-			_ = s.tg.SendMessage(resCtx, chatID, cleanResponse)
-			_ = s.db.RecordHistory(resCtx, "assistant", cleanResponse)
-		}(tema)
+		cleanResponse := nlu.SanitizeHumanResponse(res.Text)
+		_ = s.tg.SendMessage(ctx, chatID, cleanResponse)
+		_ = s.db.RecordHistory(ctx, "assistant", cleanResponse)
 		return
 
 	case "/hud", "/painel":
@@ -1633,23 +1616,18 @@ func (s *Server) handleCommand(ctx context.Context, chatID int64, cmdText string
 
 		_ = s.tg.SendMessage(ctx, chatID, fmt.Sprintf("🕷️ *Iniciando Rastreamento Web...*\nExplorando páginas internas de `%s` (limite: 5 páginas)...", targetURL))
 
-		go func(seed string) {
-			crawlCtx, cancel := context.WithTimeout(context.Background(), 35*time.Second)
-			defer cancel()
+		res, err := s.crawler.Crawl(ctx, targetURL, crawler.DefaultOptions())
+		if err != nil || len(res.Pages) == 0 {
+			_ = s.tg.SendMessage(ctx, chatID, fmt.Sprintf("⚠️ Falha ao rastrear site: %v", err))
+			return
+		}
 
-			res, err := s.crawler.Crawl(crawlCtx, seed, crawler.DefaultOptions())
-			if err != nil || len(res.Pages) == 0 {
-				_ = s.tg.SendMessage(crawlCtx, chatID, fmt.Sprintf("⚠️ Falha ao rastrear site: %v", err))
-				return
-			}
-
-			summaryMsg := fmt.Sprintf("🕷️ *Rastreamento Concluído!* (`%s`)\n📄 *Páginas varridas:* %d\n⏱️ *Tempo:* %dms\n\n", res.Host, len(res.Pages), res.Duration.Milliseconds())
-			for i, p := range res.Pages {
-				summaryMsg += fmt.Sprintf("• *%d. %s*\n  `%s`\n", i+1, p.Title, p.URL)
-			}
-			summaryMsg += "\n_Envie `/pesquisa <termo>` ou faça perguntas sobre o conteúdo dessas páginas._"
-			_ = s.tg.SendMessage(crawlCtx, chatID, summaryMsg)
-		}(targetURL)
+		summaryMsg := fmt.Sprintf("🕷️ *Rastreamento Concluído!* (`%s`)\n📄 *Páginas varridas:* %d\n⏱️ *Tempo:* %dms\n\n", res.Host, len(res.Pages), res.Duration.Milliseconds())
+		for i, p := range res.Pages {
+			summaryMsg += fmt.Sprintf("• *%d. %s*\n  `%s`\n", i+1, p.Title, p.URL)
+		}
+		summaryMsg += "\n_Envie `/pesquisa <termo>` ou faça perguntas sobre o conteúdo dessas páginas._"
+		_ = s.tg.SendMessage(ctx, chatID, summaryMsg)
 
 	case "/swarm", "/deliberar", "/conselho":
 		topic := strings.TrimSpace(strings.TrimPrefix(cmdText, cmd))
@@ -1660,24 +1638,19 @@ func (s *Server) handleCommand(ctx context.Context, chatID int64, cmdText string
 
 		_ = s.tg.SendMessage(ctx, chatID, fmt.Sprintf("🏛️ *Conselho de Inteligência Convocado!*\n\nAcionando *Pesquisador*, *Analista* e *Crítico Socrático* em paralelo sobre:\n👉 _%s_...", topic))
 
-		go func(t string) {
-			swarmCtx, cancel := context.WithTimeout(context.Background(), 75*time.Second)
-			defer cancel()
+		delib, err := s.swarm.Deliberate(ctx, topic)
+		if err != nil {
+			_ = s.tg.SendMessage(ctx, chatID, fmt.Sprintf("⚠️ Falha na deliberação dos especialistas: %v", err))
+			return
+		}
 
-			delib, err := s.swarm.Deliberate(swarmCtx, t)
-			if err != nil {
-				_ = s.tg.SendMessage(swarmCtx, chatID, fmt.Sprintf("⚠️ Falha na deliberação dos especialistas: %v", err))
-				return
-			}
+		if delib.TotalTokens > 0 {
+			_ = s.db.RecordTokenUsage(ctx, "nvidia-swarm", "nemotron-council", 0, 0, delib.TotalTokens)
+		}
 
-			if delib.TotalTokens > 0 {
-				_ = s.db.RecordTokenUsage(swarmCtx, "nvidia-swarm", "nemotron-council", 0, 0, delib.TotalTokens)
-			}
-
-			hudMsg := delib.FormatTelegramHUD()
-			_ = s.tg.SendMessage(swarmCtx, chatID, hudMsg)
-			_ = s.db.RecordHistory(swarmCtx, "assistant", hudMsg)
-		}(topic)
+		hudMsg := delib.FormatTelegramHUD()
+		_ = s.tg.SendMessage(ctx, chatID, hudMsg)
+		_ = s.db.RecordHistory(ctx, "assistant", hudMsg)
 
 	case "/briefing":
 		now := time.Now().In(s.cfg.Location)
@@ -1687,17 +1660,12 @@ func (s *Server) handleCommand(ctx context.Context, chatID int64, cmdText string
 
 		_ = s.tg.SendMessage(ctx, chatID, "☀️ *Compilando seu Briefing Executivo...*")
 
-		go func() {
-			bCtx, cancel := context.WithTimeout(context.Background(), 35*time.Second)
-			defer cancel()
-
-			aiBriefing, err := s.nluClient.GenerateBriefing(bCtx, todayStr, events, goals)
-			if err == nil && aiBriefing != "" {
-				_ = s.tg.SendMessage(bCtx, chatID, fmt.Sprintf("☀️ *ATLAS — Briefing Executivo*\n\n%s", aiBriefing))
-			} else {
-				_ = s.tg.SendMessage(bCtx, chatID, fmt.Sprintf("☀️ *ATLAS — Briefing Executivo*\n\n📅 Compromissos hoje: %d\n🎯 Metas ativas: %d\n\nQual sua meta principal para o dia?", len(events), len(goals)))
-			}
-		}()
+		aiBriefing, err := s.nluClient.GenerateBriefing(ctx, todayStr, events, goals)
+		if err == nil && aiBriefing != "" {
+			_ = s.tg.SendMessage(ctx, chatID, fmt.Sprintf("☀️ *ATLAS — Briefing Executivo*\n\n%s", aiBriefing))
+		} else {
+			_ = s.tg.SendMessage(ctx, chatID, fmt.Sprintf("☀️ *ATLAS — Briefing Executivo*\n\n📅 Compromissos hoje: %d\n🎯 Metas ativas: %d\n\nQual sua meta principal para o dia?", len(events), len(goals)))
+		}
 
 	case "/review":
 		now := time.Now().In(s.cfg.Location)
@@ -1707,17 +1675,12 @@ func (s *Server) handleCommand(ctx context.Context, chatID int64, cmdText string
 
 		_ = s.tg.SendMessage(ctx, chatID, "🌙 *Compilando sua Auditoria do Dia...*")
 
-		go func() {
-			rCtx, cancel := context.WithTimeout(context.Background(), 35*time.Second)
-			defer cancel()
-
-			aiReview, err := s.nluClient.GenerateReview(rCtx, todayStr, events, goals)
-			if err == nil && aiReview != "" {
-				_ = s.tg.SendMessage(rCtx, chatID, fmt.Sprintf("🌙 *ATLAS — Fechamento do Dia*\n\n%s", aiReview))
-			} else {
-				_ = s.tg.SendMessage(rCtx, chatID, fmt.Sprintf("🌙 *ATLAS — Fechamento do Dia*\n\nO dia está encerrando. Suas tarefas foram cumpridas ou houve procrastinação hoje?"))
-			}
-		}()
+		aiReview, err := s.nluClient.GenerateReview(ctx, todayStr, events, goals)
+		if err == nil && aiReview != "" {
+			_ = s.tg.SendMessage(ctx, chatID, fmt.Sprintf("🌙 *ATLAS — Fechamento do Dia*\n\n%s", aiReview))
+		} else {
+			_ = s.tg.SendMessage(ctx, chatID, fmt.Sprintf("🌙 *ATLAS — Fechamento do Dia*\n\nO dia está encerrando. Suas tarefas foram cumpridas ou houve procrastinação hoje?"))
+		}
 
 	case "/email", "/emails":
 		if !s.emailReader.IsConfigured() {
