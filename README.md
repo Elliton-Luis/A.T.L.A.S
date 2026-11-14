@@ -12,7 +12,7 @@ ATLAS é um assistente pessoal estilo JARVIS, combativo e hiper-racional, operad
 - **Banco Blindado:** SQLite local em modo `WAL`, queries parametrizadas (anti SQL-injection) e permissões restritas.
 - **Alta Velocidade:** Servidor HTTP nativo em Go, sem PHP-FPM, sem dependências externas de runtime, consumo de ~11MB de RAM.
 
----
+---git
 
 ## ⚡ Comandos Rápidos no Telegram
 
