@@ -75,6 +75,12 @@ func (s *Server) taskList(ctx context.Context, date string) string {
 			done++
 		}
 		fmt.Fprintf(&out, "%s [%d] %s\n", mark, task.ID, task.Description)
+		if task.Minutes > 0 {
+			fmt.Fprintf(&out, "   %d min | %s | Concluir: %s\n", task.Minutes, task.Difficulty, task.Completion)
+			if task.Resource != "" {
+				fmt.Fprintf(&out, "   %s\n", task.Resource)
+			}
+		}
 	}
 	fmt.Fprintf(&out, "\n%d/%d concluídas. Histórico preservado por data.", done, len(tasks))
 	return out.String()

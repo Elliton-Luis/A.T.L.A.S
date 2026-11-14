@@ -27,6 +27,9 @@ type Client struct {
 }
 
 type IntentResult struct {
+	Secoes                    []string     `json:"secoes,omitempty"`
+	Periodo                   string       `json:"periodo,omitempty"`
+	DuracaoMin                int          `json:"duracao_min,omitempty"`
 	Tarefas                   []string     `json:"tarefas,omitempty"`
 	Data                      string       `json:"data,omitempty"`
 	Acoes                     []ActionStep `json:"acoes,omitempty"`
@@ -439,6 +442,20 @@ Use ID real do checklist acima quando identificar. Nunca marque compromisso como
 Mapeie variações naturais como "fiz o treino" para "Treinar" usando os IDs existentes. Se mais de uma tarefa combinar, peça identificação.
 "Minhas metas diárias", "checklist", "o que fiz ontem": acao listar_tarefas; data opcional YYYY-MM-DD (use a referência atual para resolver ontem).
 Sem data explícita, ações usam hoje. Tarefas ficam no histórico por data; novo dia começa vazio, sem apagar dias anteriores.
+
+7.5. PLANEJAR O DIA é o núcleo para tornar atividades, hábitos e estudos praticáveis.
+"Meu plano é estudar inglês por meia hora", "planeje 30 minutos de inglês", "torne essa tarefa tangível":
+{"tipo":"acao","acao":"planejar_dia","termo":"Estudar inglês","duracao_min":30,"id":0}
+Extraia apenas atividade, ID real da tarefa quando houver e minutos EXPLICITAMENTE escolhidos pelo usuário. NUNCA invente duração.
+Se não houver tempo definido, omita duracao_min ou use 0: o app vai perguntar e só então criar o plano.
+Não gere passos no JSON de intenção: uma ferramenta própria cria e valida passos práticos, gratuitos e proporcionais ao tempo, com dificuldade e resultado verificável.
+Planejar não cria evento com horário de saída e não é uma ideia abstrata. Use planejar_dia mesmo se o pedido parecer complexo.
+7.6. AJUDA: acao ajuda_setor, termo organizar, proatividade, emails, fe, conhecimento, ferramentas, financas ou sistema. Sem termo, mostra apenas o índice de setores.
+7.7. EXPORTAR PDF: para "quero minha rotina em PDF", "exporte minha agenda do mês", "mande meu checklist em PDF":
+{"tipo":"acao","acao":"exportar_pdf","secoes":["rotina"],"periodo":"semana"}
+Secoes disponíveis: rotina (agenda, rotinas e checklist), agenda, rotinas, checklist, briefing. Pode combinar seções.
+Periodo: dia, semana ou mes. Data inicial opcional YYYY-MM-DD. Sem período, usa próximos 7 dias.
+O PDF usa os dados reais do banco e envia um documento ao Telegram. Nunca invente horários para tarefas que só têm duração.
 
 8. Para ações do app, contas/cartões/assinaturas, buscas e exclusões ("anotar cartão dia 10", "paguei a netflix", "quais contas vencem?", "delete o dentista", "delete isso"):
 {

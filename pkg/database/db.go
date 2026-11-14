@@ -307,6 +307,25 @@ func (db *DB) migrate(ctx context.Context, isRemote bool) error {
 		UNIQUE(data, chave)
 	);
 	CREATE INDEX IF NOT EXISTS idx_tarefas_data ON tarefas_diarias(data, id);
+	CREATE TABLE IF NOT EXISTS planos_diarios (
+		id INTEGER PRIMARY KEY AUTOINCREMENT,
+		data TEXT NOT NULL,
+		objetivo TEXT NOT NULL,
+		chave TEXT NOT NULL,
+		minutos INTEGER NOT NULL,
+		dificuldade TEXT NOT NULL,
+		base_tarefa_id INTEGER,
+		UNIQUE(data, chave)
+	);
+	CREATE TABLE IF NOT EXISTS passos_plano (
+		plano_id INTEGER NOT NULL REFERENCES planos_diarios(id),
+		tarefa_id INTEGER PRIMARY KEY REFERENCES tarefas_diarias(id),
+		ordem INTEGER NOT NULL,
+		minutos INTEGER NOT NULL,
+		conclusao TEXT NOT NULL,
+		recurso TEXT NOT NULL DEFAULT '',
+		UNIQUE(plano_id, ordem)
+	);
 
 	CREATE TABLE IF NOT EXISTS contas_a_pagar (
 		id INTEGER PRIMARY KEY AUTOINCREMENT,

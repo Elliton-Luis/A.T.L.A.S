@@ -1,6 +1,6 @@
 # ATLAS — Assistente Pessoal Executivo e Socrático (Go)
 
-ATLAS é um assistente pessoal estilo JARVIS, combativo e hiper-racional, operado 100% via Telegram (voz e texto), construído em **Go (Golang)** como um binário compilado autônomo.
+ATLAS é um assistente de organização pessoal operado via Telegram (voz e texto), construído em **Go**. Seu núcleo é transformar atividades, hábitos e estudos em passos práticos, gratuitos e compatíveis com o tempo escolhido pelo usuário, integrados à agenda, ao checklist e ao briefing diário.
 
 ---
 
@@ -99,3 +99,49 @@ Cada dia tem seu próprio checklist. O dia seguinte começa vazio; dias anterior
 "Veja meus emails e faça um resumo" retorna os emails relevantes e um parágrafo de síntese usando a mesma leitura e uma única inferência. A contagem informa a amostra consultada, não o total da caixa. Filtros como remetente e período são preservados.
 
 `/resumo <texto>` resume o texto informado; `/resumo emails de hoje` consulta e resume emails. Consultas combinadas podem compartilhar os resultados em uma síntese final.
+
+## Planejar o dia
+
+Diga a atividade e a duração disponível:
+
+- "Meu plano é estudar inglês por 30 minutos."
+- "Planeje ler por meia hora."
+- `/planejar estudar inglês por 30 min`
+- `/planejar tarefa 12 por 30 min` — transforma uma tarefa já anotada em passos.
+
+Sem duração, o bot pergunta antes de gerar ou registrar os passos. Pode responder "30 minutos", "meia hora", "uma hora e quinze minutos" ou "1h30". O tempo é definido pelo usuário, não pela IA.
+
+Cada plano informa dificuldade geral, tempo por passo e um resultado verificável para marcar conclusão. Os passos entram no checklist e aparecem no briefing. O número de passos é limitado conforme a duração: sessões curtas têm poucos passos, e nenhum plano passa de oito. A soma dos tempos precisa coincidir com o orçamento escolhido, entre 1 e 480 minutos por bloco.
+
+Todos os passos precisam ser práticos e gratuitos. Saídas que exigem pagamento, assinatura ou teste promocional são rejeitadas. Links são opcionais e limitados a um catálogo de referências públicas gratuitas. O planejamento faz uma chamada estruturada à IA; validação, registro e acompanhamento são locais. Falhas de validação não criam tarefas parciais.
+
+Repetir um plano para a mesma atividade no mesmo dia recupera os passos existentes, preservando conclusões. Quando uma tarefa ampla é desdobrada, ela não é contada novamente junto com seus passos; a conclusão de todos os passos conclui a tarefa de origem.
+
+## Navegação por setores
+
+`/help`, `/ajuda`, `/menu` e `/comandos` mostram apenas um índice curto:
+
+1. Organização do dia — `/organizar`
+2. Briefing e rotinas — `/proatividade`
+3. E-mails — `/correio`
+4. Fé e oração — `/fe`
+5. Ideias e pesquisa — `/conhecimento`
+6. Linux e ferramentas — `/ferramentas`
+7. Finanças — `/financas`
+8. Perfil e sistema — `/sistema`
+
+Os comandos detalhados ficam dentro do respectivo setor. Comandos diretos existentes continuam disponíveis. Pedidos como "ajuda com emails" ou "quais comandos de Linux?" abrem o setor sem consultar serviços externos.
+
+## Exportar rotina e calendário em PDF
+
+- "Quero minha rotina em PDF."
+- `/pdf rotina semana` — próximos sete dias, com compromissos, rotinas e checklist.
+- `/pdf agenda mes` — calendário do mês, incluindo ocorrências recorrentes.
+- `/pdf agenda checklist hoje` — seleciona as informações desejadas.
+- `/pdf checklist 2026-11-14` — consulta uma data registrada.
+- `/pdf briefing` — exporta o briefing do dia atual.
+- `/pdf ajuda` — opções de exportação.
+
+O bot envia um arquivo PDF ao Telegram. O calendário organiza os dias e horários em tabela, com preparo e saída quando registrados. Tarefas que só possuem duração ficam separadas como atividades sem horário definido; o bot não inventa horários de início ou término.
+
+A geração usa Go e fontes PDF padrão, sem Python ou serviços de conversão em produção. O arquivo temporário é removido depois do envio. A agenda do período é carregada em lote; não é necessário consultar o banco novamente para cada dia. Horários respeitam o fuso configurado.

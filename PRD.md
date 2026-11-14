@@ -1,7 +1,7 @@
 # PRD: ATLAS — Assistente Pessoal Executivo e Socrático
 
 ## 1. Visão Geral
-Assistente pessoal operado 100% via Telegram (voz e texto), hiper-racional, combativo e proativo (estilo JARVIS). Atua como consultor de vida, gerencia compromissos com cálculo determinístico de atraso, cobra tarefas pendentes e desafia ideias usando o método socrático.
+Assistente de organização pessoal operado via Telegram (voz e texto). Seu núcleo é tornar atividades, hábitos e estudos executáveis: o usuário escolhe a atividade e o tempo disponível; o ATLAS organiza passos práticos e gratuitos, registra o checklist e acompanha a conclusão. Agenda com margem de preparo/saída, briefing pessoal e ferramentas auxiliares complementam esse fluxo.
 
 ---
 
@@ -37,6 +37,19 @@ Assistente pessoal operado 100% via Telegram (voz e texto), hiper-racional, comb
 
 ### 4.3. Memória de Conversação (Context Window Local)
 - A API da LLM é stateless. O backend mantém uma janela deslizante das últimas $N$ interações no SQLite (`historico_chat`) e as injeta no payload da requisição.
+
+### 4.4. Planejamento prático diário
+- A duração é obrigatoriamente escolhida pelo usuário; sem ela, o bot pergunta antes de criar tarefas.
+- Cada passo tem uma ação concreta, minutos e um critério observável de conclusão.
+- Prática e gratuidade são requisitos obrigatórios. Não são usados passos dependentes de compras, assinaturas ou testes promocionais.
+- A soma dos minutos precisa ser igual à duração escolhida. O número de passos é proporcional ao bloco de tempo, limitado a oito.
+- O plano informa dificuldade e pode incluir referências públicas gratuitas do catálogo do aplicativo.
+- Os passos usam o checklist existente. O histórico é preservado por data, sem contar uma tarefa de origem novamente junto com seus passos.
+
+### 4.5. Navegação e exportação
+- A ajuda principal apresenta apenas setores. Os comandos detalhados aparecem ao abrir um setor.
+- A exportação PDF usa dados reais da agenda, das rotinas e do checklist, com períodos diário, semanal ou mensal.
+- Atividades sem horário permanecem identificadas como não agendadas. Uma duração estimada nunca se transforma automaticamente em um horário de calendário.
 
 ---
 

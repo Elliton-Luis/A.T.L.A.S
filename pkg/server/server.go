@@ -24,6 +24,7 @@ import (
 	"atlas/pkg/hud"
 	"atlas/pkg/interpreter"
 	"atlas/pkg/nlu"
+	"atlas/pkg/planner"
 	"atlas/pkg/scheduler"
 	"atlas/pkg/sonar"
 	"atlas/pkg/stt"
@@ -367,10 +368,19 @@ func (s *Server) processIncomingMessage(ctx context.Context, msg *telegram.Messa
 
 	// 2.1 Confirmação Pendente (Sim/Não para substituição de eventos)
 	if pending, err := s.db.GetPendingConfirmation(ctx, chatID); err == nil && pending != nil {
-		if handled, reply := s.handlePendingConfirmation(ctx, chatID, inputText, pending); handled {
-			_ = s.tg.SendMessage(ctx, chatID, reply)
-			_ = s.db.RecordHistory(ctx, "assistant", reply)
-			return
+		if pending.Tipo == "planejar_dia" {
+			if handled, reply := s.handlePendingPlan(ctx, chatID, inputText, pending); handled {
+				_ = s.db.RecordHistory(ctx, "user", inputText)
+				_ = s.tg.SendMessage(ctx, chatID, reply)
+				_ = s.db.RecordHistory(ctx, "assistant", reply)
+				return
+			}
+		} else {
+			if handled, reply := s.handlePendingConfirmation(ctx, chatID, inputText, pending); handled {
+				_ = s.tg.SendMessage(ctx, chatID, reply)
+				_ = s.db.RecordHistory(ctx, "assistant", reply)
+				return
+			}
 		}
 	}
 
@@ -423,6 +433,20 @@ func (s *Server) processIncomingMessage(ctx context.Context, msg *telegram.Messa
 	if intent.TotalTokens > 0 {
 		_ = s.db.RecordTokenUsage(ctx, intent.ProvedorUsado, intent.ModeloUsado, intent.PromptTokens, intent.CompletionTokens, intent.TotalTokens)
 	}
+	if intent.Acao == "planejar_dia" {
+		minutes, _, found, timeErr := planner.ParseDuration(inputText)
+		if timeErr != nil {
+			reply := "⚠️ " + timeErr.Error()
+			_ = s.tg.SendMessage(ctx, chatID, reply)
+			_ = s.db.RecordHistory(ctx, "assistant", reply)
+			return
+		}
+		if found {
+			intent.DuracaoMin = minutes
+		} else {
+			intent.DuracaoMin = 0
+		}
+	}
 
 	// 3.1 Perfil de Pesquisa Profunda (Tokens de Output Irrestritos)
 	lowerInput := strings.ToLower(inputText)
@@ -439,7 +463,7 @@ func (s *Server) processIncomingMessage(ctx context.Context, msg *telegram.Messa
 		strings.Contains(lowerInput, "resumo aprofundado") ||
 		strings.Contains(lowerInput, "pesquise sobre")
 
-	if isResearch {
+	if isResearch && (intent.Tipo == "conversa" || intent.Tipo == "pesquisa") {
 		waitingMsg := "🔬 *Perfil de Pesquisa Ativado (Tokens de Output Irrestritos)*\n\nCompilando síntese exaustiva, múltiplos artigos e referências completas sem cortes..."
 		_ = s.tg.SendMessage(ctx, chatID, waitingMsg)
 
@@ -589,7 +613,13 @@ func (s *Server) processIncomingMessage(ctx context.Context, msg *telegram.Messa
 		}
 
 	case "acao":
-		reply = s.executeAppAction(ctx, intent)
+		if intent.Acao == "planejar_dia" {
+			reply = s.startDayPlan(ctx, chatID, intent)
+		} else if intent.Acao == "exportar_pdf" {
+			reply = s.exportPDF(ctx, chatID, intent)
+		} else {
+			reply = s.executeAppAction(ctx, intent)
+		}
 
 	default: // "conversa"
 		reply = intent.Resposta
@@ -895,6 +925,12 @@ func (s *Server) createEventoFromIntent(ctx context.Context, intent *nlu.IntentR
 
 func (s *Server) executeAppAction(ctx context.Context, intent *nlu.IntentResult) string {
 	switch intent.Acao {
+	case "planejar_dia":
+		return s.startDayPlan(ctx, s.cfg.TelegramChatID, intent)
+	case "exportar_pdf":
+		return s.exportPDF(ctx, s.cfg.TelegramChatID, intent)
+	case "ajuda", "ajuda_setor":
+		return sectorHelp(intent.Termo)
 	case "listar_tarefas", "anotar_tarefas", "concluir_tarefa":
 		return s.taskAction(ctx, intent)
 	case "santo_do_dia", "santo":
@@ -1278,54 +1314,26 @@ func (s *Server) handleCommand(ctx context.Context, chatID int64, cmdText string
 	cmd := strings.ToLower(parts[0])
 
 	switch cmd {
+	case "/pdf", "/exportar_pdf":
+		text := s.pdfCommand(ctx, chatID, strings.TrimSpace(strings.TrimPrefix(cmdText, parts[0])))
+		_ = s.tg.SendMessage(ctx, chatID, text)
+		_ = s.db.RecordHistory(ctx, "assistant", text)
+	case "/planejar", "/planejar_dia", "/plano":
+		text := s.planningCommand(ctx, chatID, strings.TrimSpace(strings.TrimPrefix(cmdText, parts[0])))
+		_ = s.tg.SendMessage(ctx, chatID, text)
+		_ = s.db.RecordHistory(ctx, "assistant", text)
 	case "/tarefas", "/checklist", "/metas_hoje", "/tarefa", "/feito":
 		text := s.taskCommand(ctx, cmd, strings.TrimSpace(strings.TrimPrefix(cmdText, parts[0])))
 		_ = s.tg.SendMessage(ctx, chatID, text)
 		_ = s.db.RecordHistory(ctx, "assistant", text)
-	case "/start", "/ajuda", "/help":
-		msg := `🤖 *ATLAS — Como Usar (Simples e Direto)*
-
-• ⚡ */hud* — Abrir painel visual de controle
-• 💡 */ideias* — Ver todas as ideias e projetos registrados
-• 🔍 */ideia <id>* — Ler a suma acumulada completa de uma ideia
-• 🧠 */perfil* — Ver fatos e preferências que o ATLAS memorizou sobre você
-• 📖 */liturgia* — Liturgia diária católica completa com link
-• 🌟 */santo* — Santo do dia católico, história e oração
-• 📜 */versiculo <passagem>* — Bíblia Católica com Vulgata Latina (ambas)
-• ⛪ */horas [hora]* — Liturgia das Horas (opcional: */horas ativar* ou */horas desativar*)
-• 💳 */contas* — Suas contas, faturas e assinaturas (avisa 3 dias antes)
-• 💰 */pagar <nome>* — Baixar conta como paga neste mês
-• ➕ */conta <nome> dia <dia> [valor]* — Cadastrar nova conta
-• 📰 */noticias <tema>* — Buscar notícias recentes na internet com links
-• ⏰ */lembretes* — Ver mensagens diárias programadas
-• 🗑️ */apagar <id>* — Apagar uma programação diária (ex: /apagar 3)
-• 📅 */hoje* — Agenda de hoje com tempos de preparo e saída (+15%)
-• 🎯 */metas* — Suas metas e progresso
-• 📊 */tokens* — Relatório de consumo de tokens e limites
-• 🗓️ */calendario* ou */mes* — Grade visual em emojis e link iCal
-• 🛰️ */sonar <cmd>* ou *$ <cmd>* — Terminal Linux local (Zero Tokens)
-• 🐍 */py <código>* — Interpretador Python local seguro
-• 🕷️ */crawl <url>* — Rastrear e consolidar páginas de um site
-• 🏛️ */swarm <tema>* — Conselho de 3 especialistas (Pesquisador, Analista, Crítico)
-• ☀️ */briefing* / 🌙 */review* — Briefing matinal e auditoria socrática do dia
-• ☀️ */briefing config* — Ver a composição do briefing diário
-• ☀️ */briefing configurar <itens>* — Escolher conteúdo, temas e ordem
-• ☑️ */tarefas* ou */checklist* — Checklist de metas diárias
-• ➕ */tarefa <texto; outro texto>* — Anotar tarefas de hoje
-• ✅ */feito <nome ou ID>* — Marcar tarefa concluída
-• 🗂️ */tarefas ontem* ou */tarefas YYYY-MM-DD* — Consultar histórico
-• 📝 */resumo <texto>* — Resumir texto ou combinar com uma consulta
-• 📬 */emails* — Ler e curar e-mails importantes (somente leitura)
-• 📄 *Envio de Arquivos* — Envie PDFs, CSVs, TXT, código ou áudios para leitura direta
-
-💬 *Comandos Naturais (Voz ou Texto):*
-👉 _"$ git status"_ ou _"/sonar ls -la"_
-👉 _"Anotar uma ideia: criar um app de assinatura para barbeiros"_
-👉 _"Adicione à ideia anterior que o plano mensal será R$ 49"_
-👉 _"Lembre-se que eu sou desenvolvedor e acordo às 06:30"_
-👉 _"Qual é a liturgia diária de hoje?"_
-👉 _"Todo dia às 09:00 mande uma mensagem dizendo: tomar creatina"_`
-		_ = s.tg.SendMessage(ctx, chatID, msg)
+	case "/start", "/ajuda", "/help", "/menu", "/comandos":
+		text := sectorHelp(strings.TrimSpace(strings.TrimPrefix(cmdText, parts[0])))
+		_ = s.tg.SendMessage(ctx, chatID, text)
+		_ = s.db.RecordHistory(ctx, "assistant", text)
+	case "/organizar", "/proatividade", "/correio", "/fe", "/conhecimento", "/ferramentas", "/financas", "/sistema":
+		text := sectorHelp(cmd)
+		_ = s.tg.SendMessage(ctx, chatID, text)
+		_ = s.db.RecordHistory(ctx, "assistant", text)
 
 	case "/liturgia":
 		_ = s.tg.SendChatAction(ctx, chatID, "typing")
@@ -2209,6 +2217,15 @@ func matchFastPath(text string) (string, bool) {
 	}
 	if strings.HasPrefix(clean, "conselho ") {
 		return "/swarm " + strings.TrimSpace(text[len("conselho "):]), true
+	}
+	if command, ok := planningFastPath(text); ok {
+		return command, true
+	}
+	if command, ok := helpFastPath(text); ok {
+		return command, true
+	}
+	if command, ok := pdfFastPath(text); ok {
+		return command, true
 	}
 	if command, ok := checklistFastPath(text); ok {
 		return command, true

@@ -161,6 +161,9 @@ func (e *Engine) BuildDefaultBriefing(ctx context.Context, date string) (string,
 			mark = "☑"
 		}
 		fmt.Fprintf(&b, "%s %s\n", mark, task.Description)
+		if task.Minutes > 0 {
+			fmt.Fprintf(&b, "  %d min | %s | Resultado: %s\n", task.Minutes, task.Difficulty, task.Completion)
+		}
 	}
 	b.WriteString("\n*Rotinas de hoje*\n")
 	for _, routine := range routines {
