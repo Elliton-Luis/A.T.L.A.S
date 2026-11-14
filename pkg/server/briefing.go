@@ -16,11 +16,11 @@ import (
 )
 
 var briefingTitles = map[string]string{
-	"agenda_completa": "Agenda, checklist, rotinas, metas e contas", "listar_agenda": "Compromissos do dia",
+	"agenda_completa": "Agenda, checklist, envios, metas e contas", "listar_agenda": "Compromissos do dia",
 	"liturgia": "Liturgia do dia", "santo_do_dia": "Santo do dia", "liturgia_das_horas": "Liturgia das Horas",
 	"versiculo_biblico": "Versículo", "pensamento": "Meu pensamento", "ideia": "Pensamento registrado",
 	"noticias_resumo": "Notícias", "resumir_emails": "Resumo dos e-mails", "listar_contas": "Contas",
-	"listar_lembretes": "Rotinas", "listar_tarefas": "Checklist diário",
+	"listar_lembretes": "Lembretes", "listar_automacoes": "Automações", "listar_tarefas": "Checklist diário",
 }
 
 func isBriefingConfiguration(text string) bool {
@@ -168,6 +168,9 @@ func (s *Server) showBriefingConfig(ctx context.Context) string {
 func (s *Server) configureBriefingText(ctx context.Context, operation, text string) string {
 	if strings.TrimSpace(text) == "" {
 		return "Descreva os itens, por exemplo: configure meu briefing com liturgia, santo do dia, um versículo sobre confiança e todos os compromissos."
+	}
+	if reply, handled := s.handleSimpleBriefing(ctx, s.cfg.TelegramChatID, operation+" meu briefing com "+text); handled {
+		return reply
 	}
 	history, _ := s.db.GetRecentHistory(ctx, s.cfg.HistoryLimit)
 	memories, _ := s.db.GetAllUserMemories(ctx)

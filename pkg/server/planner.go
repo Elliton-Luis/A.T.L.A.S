@@ -19,6 +19,7 @@ import (
 var planningPrefix = regexp.MustCompile(`(?i)^(?:(?:quero|preciso|me ajude a)\s+)?(?:planejar|planeje|planeja|planejamento|meu plano(?: é| e)?)\s*(?:(?:o|meu)\s+dia\b)?\s*[:,-]?\s*`)
 var planningTail = regexp.MustCompile(`(?i)(?:\s+(?:por|durante|em|com|para|hoje|e))+$`)
 var planningTask = regexp.MustCompile(`(?i)^tarefa\s+([0-9]+)$`)
+var naturalStudyGoal = regexp.MustCompile(`(?i)\b(?:estudar|aprender|praticar|treinar|revisar|ler)\s+[^.,;\n!?]+`)
 
 type pendingPlan struct {
 	Objective    string
@@ -30,7 +31,43 @@ type pendingPlan struct {
 
 func planningFastPath(text string) (string, bool) {
 	if !planningPrefix.MatchString(strings.TrimSpace(text)) {
-		return "", false
+		clean := synonyms.RemoveAccents(strings.ToLower(text))
+		if synonyms.MatchCanonical(synonyms.TokenizeAndCanonicalize(clean), "nao") {
+			return "", false
+		}
+		for _, question := range []string{"quero saber", "o que significa", "vale a pena", "voce acha"} {
+			if strings.Contains(clean, question) {
+				return "", false
+			}
+		}
+		for _, tool := range []string{"briefing", "email", "e-mail", "liturgia", "santo do dia", "noticias", "pdf", "agenda", "calendario", "resumo", "resuma", "sintese"} {
+			if strings.Contains(clean, tool) {
+				return "", false
+			}
+		}
+		goalIntent := false
+		for _, phrase := range []string{"quero", "queria", "pretendo", "penso em", "gostaria de", "me ajude a", "formas eficientes", "como estudar"} {
+			if strings.Contains(clean, phrase) {
+				goalIntent = true
+				break
+			}
+		}
+		if !goalIntent {
+			return "", false
+		}
+		minutes, rest, _, err := planner.ParseDuration(text)
+		if err != nil {
+			return "", false
+		}
+		goal := strings.TrimSpace(naturalStudyGoal.FindString(rest))
+		if goal == "" {
+			return "", false
+		}
+		goal = strings.Trim(planningTail.ReplaceAllString(" "+goal, ""), " ,;:-")
+		if minutes > 0 {
+			return fmt.Sprintf("/planejar %s por %d min", goal, minutes), true
+		}
+		return "/planejar " + goal, true
 	}
 	if strings.Contains(synonyms.RemoveAccents(strings.ToLower(text)), "briefing") {
 		return "", false
@@ -114,6 +151,9 @@ func (s *Server) startDayPlan(ctx context.Context, chatID int64, intent *nlu.Int
 	}
 	plan, err := s.nluClient.GenerateDailyPlan(ctx, goal, request.Minutes)
 	if err != nil {
+		if nlu.IsProviderFailure(err) {
+			return nlu.FailureMessage(err) + " A atividade e o tempo ficaram guardados. Diga ‘tente novamente’."
+		}
 		return "⚠️ Não consegui gerar um plano que respeite o tempo, a prática e a gratuidade. Nenhuma tarefa foi criada. Diga ‘tente novamente’ para repetir com a mesma atividade e duração."
 	}
 	plan.Date = date

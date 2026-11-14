@@ -19,6 +19,8 @@ import (
 
 var routineTime = regexp.MustCompile(`(?:\bas\s+|\ba\s+|\bpara\s+)?\b([0-9]{1,2})(?::([0-9]{2})|h([0-9]{2})?\b)`)
 var shortRoutineTime = regexp.MustCompile(`\b(?:as|para)\s+([0-9]{1,2})\b`)
+var spokenRoutineTime = regexp.MustCompile(`\b(?:as|a|pelas|para(?: as)?)\s+(vinte e tres|vinte e duas|vinte e dois|vinte e uma|vinte e um|vinte|dezenove|dezoito|dezessete|dezesseis|quinze|quatorze|catorze|treze|doze|onze|dez|nove|oito|sete|seis|cinco|quatro|tres|duas|dois|uma|um|zero)(?:\s+horas?)?(?:\s+e\s+(meia|quinze|trinta|quarenta e cinco))?\b`)
+var clockWords = map[string]int{"zero": 0, "um": 1, "uma": 1, "dois": 2, "duas": 2, "tres": 3, "quatro": 4, "cinco": 5, "seis": 6, "sete": 7, "oito": 8, "nove": 9, "dez": 10, "onze": 11, "doze": 12, "treze": 13, "catorze": 14, "quatorze": 14, "quinze": 15, "dezesseis": 16, "dezessete": 17, "dezoito": 18, "dezenove": 19, "vinte": 20, "vinte e um": 21, "vinte e uma": 21, "vinte e dois": 22, "vinte e duas": 22, "vinte e tres": 23}
 
 func automationOperation(text string) bool {
 	clean := synonyms.RemoveAccents(strings.ToLower(text))
@@ -199,6 +201,7 @@ func (s *Server) handleAutomation(ctx context.Context, text string) (string, boo
 }
 
 func extractRoutineTime(text string) string {
+	text = synonyms.RemoveAccents(strings.ToLower(text))
 	match := routineTime.FindStringSubmatch(text)
 	if len(match) > 0 {
 		minute := match[2]
@@ -208,13 +211,38 @@ func extractRoutineTime(text string) string {
 		if minute == "" {
 			minute = "00"
 		}
-		return fmt.Sprintf("%02s:%s", match[1], minute)
+		hour, _ := strconv.Atoi(match[1])
+		min, _ := strconv.Atoi(minute)
+		return routineClockPeriod(hour, min, text)
 	}
 	match = shortRoutineTime.FindStringSubmatch(text)
 	if len(match) > 0 {
-		return fmt.Sprintf("%02s:00", match[1])
+		hour, _ := strconv.Atoi(match[1])
+		return routineClockPeriod(hour, 0, text)
+	}
+	if match := spokenRoutineTime.FindStringSubmatch(text); len(match) > 0 {
+		minutes := map[string]int{"meia": 30, "quinze": 15, "trinta": 30, "quarenta e cinco": 45}
+		return routineClockPeriod(clockWords[match[1]], minutes[match[2]], text)
+	}
+	if strings.Contains(text, "meia-noite") || strings.Contains(text, "meia noite") {
+		return "00:00"
+	}
+	if strings.Contains(text, "meio-dia") || strings.Contains(text, "meio dia") {
+		return "12:00"
 	}
 	return ""
+}
+
+func routineClockPeriod(hour, minute int, text string) string {
+	if strings.Contains(text, "da tarde") || strings.Contains(text, "da noite") {
+		if hour > 0 && hour < 12 {
+			hour += 12
+		}
+	}
+	if hour < 0 || hour > 23 || minute < 0 || minute > 59 {
+		return ""
+	}
+	return fmt.Sprintf("%02d:%02d", hour, minute)
 }
 
 func (s *Server) executeScheduledAction(ctx context.Context, action scheduler.ActionRoutine) (string, error) {
@@ -260,7 +288,7 @@ func (s *Server) executeScheduledAction(ctx context.Context, action scheduler.Ac
 		return s.readEmails(ctx, action.Term)
 	case "listar_agenda":
 		return s.agendaView(ctx, s.today()), nil
-	case "noticias", "listar_lembretes", "listar_contas", "listar_tarefas":
+	case "noticias", "listar_lembretes", "listar_automacoes", "listar_contas", "listar_tarefas":
 		result := s.executeAppAction(ctx, &nlu.IntentResult{Acao: action.Action, Termo: action.Term})
 		if strings.HasPrefix(result, "⚠️") {
 			return "", fmt.Errorf("%s", result)

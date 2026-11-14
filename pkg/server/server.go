@@ -392,7 +392,14 @@ func (s *Server) processIncomingMessage(ctx context.Context, msg *telegram.Messa
 
 	// 2.1 Confirmação Pendente (Sim/Não para substituição de eventos)
 	if pending, err := s.db.GetPendingConfirmation(ctx, chatID); err == nil && pending != nil {
-		if pending.Tipo == "simular_compra" {
+		if pending.Tipo == "briefing_horario" {
+			if handled, reply := s.handleBriefingHour(ctx, chatID, inputText, pending); handled {
+				_ = s.db.RecordHistory(ctx, "user", inputText)
+				_ = s.tg.SendMessage(ctx, chatID, reply)
+				_ = s.db.RecordHistory(ctx, "assistant", reply)
+				return
+			}
+		} else if pending.Tipo == "simular_compra" {
 			if handled, reply := s.handlePurchaseSalary(ctx, chatID, inputText, pending); handled {
 				_ = s.db.RecordHistory(ctx, "user", inputText)
 				_ = s.tg.SendMessage(ctx, chatID, reply)
@@ -437,6 +444,12 @@ func (s *Server) processIncomingMessage(ctx context.Context, msg *telegram.Messa
 			return
 		}
 	}
+	if reply, handled := s.handleSimpleBriefing(ctx, chatID, inputText); handled {
+		_ = s.db.RecordHistory(ctx, "user", inputText)
+		_ = s.tg.SendMessage(ctx, chatID, reply)
+		_ = s.db.RecordHistory(ctx, "assistant", reply)
+		return
+	}
 	if reply, handled := s.handleAutomation(ctx, inputText); handled {
 		_ = s.db.RecordHistory(ctx, "user", inputText)
 		_ = s.tg.SendMessage(ctx, chatID, reply)
@@ -465,7 +478,7 @@ func (s *Server) processIncomingMessage(ctx context.Context, msg *telegram.Messa
 	intent, err := s.nluClient.ParseIntent(ctx, inputText, currentDatetime, history, memories, latestIdeia, activeEvents, nlu.IntentContext{Routines: routines, RoutineCategories: routineCategories, Tasks: tasks, Briefing: briefingItems})
 	if err != nil {
 		log.Printf("[Erro NLU] %v\n", err)
-		reply := "⚠️ Ocorreu uma oscilação no processamento do seu pensamento. Repita de forma mais concisa."
+		reply := nlu.FailureMessage(err)
 		_ = s.tg.SendMessage(ctx, chatID, reply)
 		_ = s.db.RecordHistory(ctx, "assistant", reply)
 		return

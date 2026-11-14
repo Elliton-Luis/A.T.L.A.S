@@ -193,3 +193,15 @@ O cálculo usa centavos inteiros: `saldo = salário - gastos - dívidas`. As dí
 O índice tem 20 níveis: `limitar(2 × saldo / custo, 1, 20)`, com divisão inteira. Saldo menor que o custo fica no primeiro nível; saldo de 1× indica ausência de reserva para imprevistos; a partir de 2× atinge o mínimo definido; 10× ou mais atinge 20/20. A resposta mostra o índice, o rótulo e os valores usados. Não realiza compras ou pagamentos.
 
 Se o salário não estiver salvo, o bot pergunta sem perder o custo, gastos e dívidas já informados. Valores omitidos de gastos/dívidas aparecem como zero na conta; não são estimados pela IA. O cálculo é determinístico e não depende de inferência.
+
+## Pedidos falados e falhas de IA
+
+Configurações simples como "quero criar um briefing de manhã com liturgia diária, santo do dia e tudo o que tenho que fazer, todo dia às sete horas da manhã" são resolvidas localmente. O bot seleciona as fontes conhecidas e grava a composição/automação sem chamar a NLU. Repetições e exemplos de atividades, como aula e natação, não criam novos compromissos: os dados vêm da agenda do dia.
+
+Horários aceitam algarismos e formas faladas, como "sete horas da manhã", "sete e meia" e "sete da noite". Se o pedido diário não tiver horário, a composição fica guardada enquanto o bot pergunta. Fontes que precisam de parâmetros, como notícias por tema, pensamentos e filtros de email, continuam usando a interpretação completa.
+
+Pedidos como "penso em estudar latim, só tenho uma hora livre por dia" seguem diretamente para o gerador de passos com 60 minutos. Isso evita uma chamada separada apenas para classificar o pedido. O gerador envia instruções de sistema e uma consulta de usuário separada, conforme exigido pelo modelo.
+
+Nas chamadas Groq estruturadas, o cliente envia JSON Object Mode e parâmetros de raciocínio compatíveis com cada modelo. Ao receber limite de uso, indisponibilidade ou falta de acesso ao modelo principal, tenta uma alternativa de produção antes do provedor NVIDIA configurado. As tentativas são limitadas; erro de autenticação não provoca rotação inútil entre modelos.
+
+Erros preservam provedor, modelo, status HTTP e código seguro, sem registrar o corpo bruto da resposta, senhas ou chaves. Falhas do provedor não são apresentadas como exigência de o usuário encurtar a mensagem. Conteúdo de raciocínio sem resposta final não é tratado como resposta nem como comando.
