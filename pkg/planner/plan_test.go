@@ -46,7 +46,7 @@ func TestDurationUnderstandsNaturalBudgets(t *testing.T) {
 	for _, test := range []struct {
 		text    string
 		minutes int
-	}{{"inglês por 30min", 30}, {"treinar por meia hora", 30}, {"ler durante 1h30", 90}, {"estudar por uma hora e quinze minutos", 75}, {"estudar por quarenta e cinco minutos", 45}, {"praticar por 1h e 20min", 80}, {"ler por um quarto de hora", 15}, {"inglês por 1h30min", 90}} {
+	}{{"inglês por 30min", 30}, {"treinar por meia hora", 30}, {"ler durante 1h30", 90}, {"estudar por uma hora e quinze minutos", 75}, {"estudar por quarenta e cinco minutos", 45}, {"praticar por 1h e 20min", 80}, {"ler por um quarto de hora", 15}, {"inglês por 1h30min", 90}, {"inglês por 1,5h", 90}, {"30min ou 1 hora", 60}, {"estudar por 2-3 horas", 180}} {
 		minutes, remaining, found, err := ParseDuration(test.text)
 		if err != nil || !found || minutes != test.minutes {
 			t.Errorf("%s: %d (%v)", test.text, minutes, err)
@@ -55,7 +55,7 @@ func TestDurationUnderstandsNaturalBudgets(t *testing.T) {
 			t.Fatal("tempo ficou no objetivo")
 		}
 	}
-	for _, text := range []string{"0 min", "1h90", "999 min", "1,5h", "30min ou 1 hora"} {
+	for _, text := range []string{"0 min", "1h90", "999 min"} {
 		if _, _, _, err := ParseDuration(text); err == nil {
 			t.Errorf("duração inválida aceita: %s", text)
 		}

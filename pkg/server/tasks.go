@@ -26,10 +26,27 @@ func checklistFastPath(text string) (string, bool) {
 		}
 		return "/feito " + term, true
 	}
+	if synonyms.MatchCanonical(tokens, "apagar") || synonyms.MatchCanonical(tokens, "planejar") {
+		return "", false
+	}
+	for _, verb := range []string{"anote", "anotar", "crie", "criar", "adicione", "adicionar", "registre", "registrar", "marque", "marcar", "mude", "mudar", "altere", "alterar", "defina", "definir"} {
+		if synonyms.MatchCanonical(tokens, synonyms.CanonicalizeWord(verb)) {
+			return "", false
+		}
+	}
+	if synonyms.MatchCanonical(tokens, "tarefa") && (len(tokens) <= 4 || synonyms.MatchCanonical(tokens, "ver")) {
+		if strings.Contains(clean, "ontem") {
+			return "/tarefas ontem", true
+		}
+		if strings.Contains(clean, "amanha") {
+			return "/tarefas amanha", true
+		}
+		return "/tarefas", true
+	}
 	if synonyms.MatchCanonical(tokens, "tarefa") && synonyms.MatchCanonical(tokens, "ver") {
 		return "/tarefas", true
 	}
-	if synonyms.MatchCanonical(tokens, "meta") && (strings.Contains(clean, "diari") || strings.Contains(clean, "de hoje") || strings.Contains(clean, "do dia")) && (len(tokens) <= 4 || synonyms.MatchCanonical(tokens, "ver")) {
+	if synonyms.MatchCanonical(tokens, "meta") && (strings.Contains(clean, "diari") || strings.Contains(clean, "hoje") || strings.Contains(clean, "do dia")) && (len(tokens) <= 4 || synonyms.MatchCanonical(tokens, "ver")) {
 		return "/tarefas", true
 	}
 	if clean == "o que fiz hoje" || clean == "o que eu fiz hoje" || clean == "tarefas" || clean == "minhas tarefas" || clean == "metas diarias" || clean == "checklist" || clean == "check list" || clean == "check-list" {
@@ -49,6 +66,8 @@ func (s *Server) taskDate(text string) (string, error) {
 		return now.Format("2006-01-02"), nil
 	case "ontem":
 		return now.AddDate(0, 0, -1).Format("2006-01-02"), nil
+	case "amanha":
+		return now.AddDate(0, 0, 1).Format("2006-01-02"), nil
 	}
 	day, err := time.ParseInLocation("2006-01-02", text, s.cfg.Location)
 	if err != nil {

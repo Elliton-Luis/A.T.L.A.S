@@ -17,9 +17,12 @@ ATLAS é um assistente de organização pessoal operado via Telegram (voz e text
 ## ⚡ Comandos Rápidos no Telegram
 
 - `/ajuda` ou `/help` — Exibe todos os comandos disponíveis.
-- `/rotinas` — Lista as rotinas proativas cadastradas e seus horários.
-- `/rotina <id> horario HH:MM` — Altera o horário de disparo de uma rotina.
-- `/rotina <id> toggle` — Ativa ou desativa uma rotina.
+- `/dia` — Visão geral do dia, usando os mesmos dados dos módulos abaixo.
+- `/agenda` — Todos os compromissos, agrupados por atividade, dia e horário.
+- `/lembretes` — Somente mensagens fixas programadas.
+- `/automacoes` — Somente consultas/ações programadas, como briefing e liturgia.
+- `/lembrete <id> horario HH:MM` — Altera um lembrete.
+- `/automacao <id> horario HH:MM` — Altera uma automação.
 - `/hoje` — Exibe a agenda de hoje com os alertas de preparo e saída (+15% de margem).
 - `/metas` — Lista os objetivos em andamento.
 - `/ideias` — Lista ideias anotadas e seus questionamentos socráticos.
@@ -122,7 +125,7 @@ Repetir um plano para a mesma atividade no mesmo dia recupera os passos existent
 `/help`, `/ajuda`, `/menu` e `/comandos` mostram apenas um índice curto:
 
 1. Organização do dia — `/organizar`
-2. Briefing e rotinas — `/proatividade`
+2. Briefing e envios — `/proatividade`
 3. E-mails — `/correio`
 4. Fé e oração — `/fe`
 5. Ideias e pesquisa — `/conhecimento`
@@ -145,3 +148,48 @@ Os comandos detalhados ficam dentro do respectivo setor. Comandos diretos existe
 O bot envia um arquivo PDF ao Telegram. O calendário organiza os dias e horários em tabela, com preparo e saída quando registrados. Tarefas que só possuem duração ficam separadas como atividades sem horário definido; o bot não inventa horários de início ou término.
 
 A geração usa Go e fontes PDF padrão, sem Python ou serviços de conversão em produção. O arquivo temporário é removido depois do envio. A agenda do período é carregada em lote; não é necessário consultar o banco novamente para cada dia. Horários respeitam o fuso configurado.
+
+## Conceitos e comandos sem sobreposição
+
+- **Compromisso:** possui início e duração. Pode repetir em dias/horários diferentes; cada linha tem um ID. `/agenda`, `/hoje`, `/compromisso <ID> horario HH:MM`.
+- **Calendário:** apenas uma visualização dos mesmos compromissos. `/calendario`, feed iCal e PDF não criam outro cadastro.
+- **Tarefa:** item de checklist sem horário fixo. `/tarefas`, `/tarefa`, `/feito`.
+- **Plano:** passos práticos de uma tarefa, com orçamento de tempo. `/planejar`.
+- **Lembrete:** texto literal programado. `/lembrete criar 09:00 beber água`; `/lembrete <ID> pausar`, `ativar`, `excluir` ou `horario HH:MM`.
+- **Automação:** executa uma ferramenta e envia o resultado atualizado. `/automacoes`; `/automacao <ID> pausar`, `ativar`, `excluir` ou `horario HH:MM`. O briefing é uma automação configurável.
+- **Dia/rotina:** visão geral, não um novo tipo de cadastro. `/dia`.
+
+Um comando de lembrete rejeita IDs de automações e vice-versa. A exclusão de um compromisso não procura outro item nas mensagens programadas quando o alvo não existe. `/limpar_lembretes` e `/limpar_automacoes` têm escopos distintos; a confirmação usa os IDs selecionados e preserva itens criados depois dela.
+
+Os nomes antigos `/rotinas` e `/rotina` são mantidos como orientação de compatibilidade. A alteração/exclusão deve usar o tipo correto; `/apagar <ID>` e `/limpar` não escolhem uma categoria silenciosamente.
+
+## Compromissos: duração e alterações parciais
+
+Ao cadastrar um compromisso, informe sua duração. Se faltar, o bot guarda o rascunho e pergunta antes de criar registros. "2-3 horas", "entre 2 e 3 horas" e "30 minutos a 1 hora" usam o maior valor. "Às 18h" é início, não duração; intervalos como "das 23h às 2h" são calculados atravessando a meia-noite.
+
+"Aula" pode ser um único grupo visual com linhas como segunda às 18h e sexta às 08:30. Alterar uma linha preserva o ID, os demais dias, duração, preparo e deslocamento que não foram modificados. Um nome com várias linhas exige identificação por dia, horário original ou ID. Alterações em lote são atômicas; um erro não deixa metade da agenda alterada. Cadastros repetidos não criam novas linhas idênticas.
+
+Zero explícito de preparo/deslocamento é preservado. Registros antigos sem duração continuam com duração desconhecida, sem inventar uma hora. A duração vale para o término mostrado na agenda, no PDF, no iCal e no acompanhamento de conclusão. A pergunta de conclusão ocorre após o fim previsto, inclusive em ocorrências que terminam no dia seguinte.
+
+## Transcrição antes da execução
+
+Para mensagens de voz, arquivos de áudio e documentos de áudio, a primeira mensagem enviada após a transcrição é `Transcrição: 'texto reconhecido'`, como texto literal. Só depois o bot interpreta a intenção ou altera dados. Se não conseguir entregar essa transcrição ao Telegram, não executa o comando reconhecido.
+
+## Capacidades e disponibilidade
+
+`/capacidades` apresenta o catálogo real do aplicativo. `/capacidades pdf` ou perguntas como "você consegue gerar PDF?" consultam um recurso sem executá-lo. Pedidos concretos, como "gere minha rotina em PDF", mantêm o fluxo de execução.
+
+O mesmo catálogo alimenta os prompts de classificação e análise. Ele distingue recurso local, integração configurada, dependência externa e credencial ausente, sem incluir chaves, senhas ou endereços privados. "Configurado" não significa "conexão testada". Por exemplo, IMAP permite leitura e resumo, não envio ou exclusão de emails.
+
+## Simulação financeira: possibilidade de compra
+
+- `/salario 5.000,00` — guarda o salário mensal.
+- `/salario` — consulta o valor salvo.
+- `/simular_compra 1000 2000 500` — custo do item, gastos e dívidas informados para a simulação.
+- "Posso comprar um item de R$ 1000, com gastos de R$ 2000 e dívidas de R$ 500?"
+
+O cálculo usa centavos inteiros: `saldo = salário - gastos - dívidas`. As dívidas da simulação não são gravadas como contas nem reutilizadas na próxima consulta. Contas cadastradas não são somadas automaticamente, evitando dupla contagem.
+
+O índice tem 20 níveis: `limitar(2 × saldo / custo, 1, 20)`, com divisão inteira. Saldo menor que o custo fica no primeiro nível; saldo de 1× indica ausência de reserva para imprevistos; a partir de 2× atinge o mínimo definido; 10× ou mais atinge 20/20. A resposta mostra o índice, o rótulo e os valores usados. Não realiza compras ou pagamentos.
+
+Se o salário não estiver salvo, o bot pergunta sem perder o custo, gastos e dívidas já informados. Valores omitidos de gastos/dívidas aparecem como zero na conta; não são estimados pela IA. O cálculo é determinístico e não depende de inferência.

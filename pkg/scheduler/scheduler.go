@@ -10,6 +10,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"atlas/pkg/calculator"
@@ -33,6 +34,7 @@ type Engine struct {
 	nluClient     *nlu.Client
 	lastBackup    string
 	tickMu        sync.Mutex
+	running       atomic.Bool
 	ExecuteAction func(context.Context, ActionRoutine) (string, error)
 }
 
@@ -47,8 +49,12 @@ func NewEngine(cfg *config.Config, db *database.DB, tg MessageSender, nluClient 
 
 // Start runs the proactive scheduler loops in background goroutines until context is cancelled.
 func (e *Engine) Start(ctx context.Context) {
+	if !e.running.CompareAndSwap(false, true) {
+		return
+	}
 	ticker := time.NewTicker(30 * time.Second)
 	go func() {
+		defer e.running.Store(false)
 		defer ticker.Stop()
 		for {
 			select {
@@ -61,6 +67,8 @@ func (e *Engine) Start(ctx context.Context) {
 	}()
 	log.Println("[Scheduler] Motor de Proatividade e Buffers iniciado.")
 }
+
+func (e *Engine) Running() bool { return e.running.Load() }
 
 // Tick executes a single scheduled evaluation pass (buffers, proactive routines, backups).
 // Can be called by internal goroutines or by an external serverless cron webhook (e.g. cron-job.org).
@@ -175,9 +183,10 @@ func (e *Engine) processEventBuffers(ctx context.Context, now time.Time, nowStr 
 	compEvents, err := e.db.GetPendingCompletionEvents(ctx, thresholdStr)
 	if err == nil {
 		for _, ev := range compEvents {
-			msg := fmt.Sprintf("⏱️ *Compromisso Finalizado*\n\nO evento *%s* (agendado para %s) encerrou. Deseja marcar como concluído ou precisa de algum ajuste?", ev.Descricao, ev.HorarioOficial)
+			msg := fmt.Sprintf("⏱️ *Fim previsto do compromisso*\n\n[%d] *%s* — início %s, duração %d min. Foi concluído ou precisa de ajuste?", ev.ID, ev.Descricao, ev.HorarioOficial, *ev.DuracaoMin)
 			if err := e.tg.SendMessage(ctx, e.cfg.TelegramChatID, msg); err == nil {
 				_ = e.db.MarkCompletionNotified(ctx, ev.ID)
+				_ = e.db.RecordHistory(ctx, "assistant", msg)
 			}
 		}
 	}
@@ -196,6 +205,7 @@ func (e *Engine) processEventBuffers(ctx context.Context, now time.Time, nowStr 
 		ultimoDiaMes := time.Date(now.Year(), now.Month()+1, 0, 0, 0, 0, 0, loc).Day()
 
 		for _, rev := range recurringEvents {
+			e.processRecurringCompletion(ctx, now, rev)
 			if completed[rev.ID] {
 				continue
 			}
@@ -266,16 +276,38 @@ func (e *Engine) processEventBuffers(ctx context.Context, now time.Time, nowStr 
 				}
 			}
 
-			// Auditoria Pós-Evento (15 min após o horário oficial)
-			if !now.Before(oficialToday.Add(15*time.Minute)) && (rev.UltimaConclusaoData == nil || *rev.UltimaConclusaoData != todayStr) {
-				if now.Before(oficialToday.Add(2 * time.Hour)) {
-					msg := fmt.Sprintf("⏱️ *Compromisso Recorrente (%s)*\n\nO evento *%s* (programado para às %02d:%02d) foi concluído com sucesso hoje?", freqLabel, rev.Descricao, hh, mm)
-					if err := e.tg.SendMessage(ctx, e.cfg.TelegramChatID, msg); err == nil {
-						_ = e.db.MarkRecurringCompletionNotified(ctx, rev.ID, todayStr)
-					}
-				}
-			}
 		}
+	}
+}
+
+// Completion is based on the occurrence's END, even when it crosses midnight.
+func (e *Engine) processRecurringCompletion(ctx context.Context, now time.Time, event database.Evento) {
+	if event.DuracaoMin == nil || *event.DuracaoMin < 1 {
+		return
+	}
+	clock, err := time.Parse("15:04", event.HorarioTime)
+	if err != nil {
+		return
+	}
+	span := time.Duration(*event.DuracaoMin) * time.Minute
+	latestStart := now.Add(-span - 15*time.Minute)
+	start := time.Date(latestStart.Year(), latestStart.Month(), latestStart.Day(), clock.Hour(), clock.Minute(), 0, 0, now.Location())
+	if start.After(latestStart) {
+		start = start.AddDate(0, 0, -1)
+	}
+	end := start.Add(span)
+	date := start.Format("2006-01-02")
+	if !event.OccursOn(start) || now.Before(end.Add(15*time.Minute)) || !now.Before(end.Add(2*time.Hour)) || event.UltimaConclusaoData != nil && *event.UltimaConclusaoData == date {
+		return
+	}
+	done, err := e.db.OccurrenceCompleted(ctx, event.ID, date)
+	if err != nil || done {
+		return
+	}
+	message := fmt.Sprintf("⏱️ *Fim previsto do compromisso recorrente*\n[%d] %s — ocorrência de %s, término %s. Foi concluído?", event.ID, event.Descricao, date, end.Format("02/01 15:04"))
+	if err := e.tg.SendMessage(ctx, e.cfg.TelegramChatID, message); err == nil {
+		_ = e.db.MarkRecurringCompletionNotified(ctx, event.ID, date)
+		_ = e.db.RecordHistory(ctx, "assistant", message)
 	}
 }
 
@@ -375,6 +407,12 @@ func (e *Engine) executeRoutine(ctx context.Context, r database.RotinaProativa, 
 				message, err = e.ExecuteAction(ctx, action)
 			}
 		}
+	case "lembrete":
+		var reminder Reminder
+		reminder, err = DecodeReminder(r)
+		if err == nil {
+			message = reminder.Message
+		}
 	case "custom":
 		legacy, _ := decodeAction(r)
 		if legacy.Action != "" {
@@ -442,6 +480,10 @@ func (e *Engine) executeRoutine(ctx context.Context, r database.RotinaProativa, 
 
 func decodeAction(r database.RotinaProativa) (ActionRoutine, error) {
 	var action ActionRoutine
+	if r.Tipo == "lembrete" {
+		reminder, err := DecodeReminder(r)
+		return ActionRoutine{Days: reminder.Days}, err
+	}
 	if r.Tipo == "custom" && r.PromptCustom != nil {
 		// Preserve literal reminders; upgrade only exact legacy tool labels.
 		label := strings.TrimSpace(synonyms.RemoveAccents(strings.ToLower(*r.PromptCustom)))

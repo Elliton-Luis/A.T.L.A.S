@@ -137,6 +137,16 @@ func (c *Client) SendMessage(ctx context.Context, chatID int64, text string) err
 	return nil
 }
 
+// SendPlainMessage preserves literal transcriptions without Markdown interpretation.
+func (c *Client) SendPlainMessage(ctx context.Context, chatID int64, text string) error {
+	for _, chunk := range splitMessage(text, 4000) {
+		if err := c.sendPlainMessage(ctx, chatID, chunk); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 func (c *Client) sendSingleMessage(ctx context.Context, chatID int64, text string) error {
 	url := fmt.Sprintf("https://api.telegram.org/bot%s/sendMessage", c.botToken)
 

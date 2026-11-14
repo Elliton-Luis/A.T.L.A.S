@@ -21,10 +21,12 @@ import (
 	"atlas/pkg/database"
 	"atlas/pkg/documents"
 	"atlas/pkg/email"
+	"atlas/pkg/finance"
 	"atlas/pkg/hud"
 	"atlas/pkg/interpreter"
 	"atlas/pkg/nlu"
 	"atlas/pkg/planner"
+	"atlas/pkg/schedule"
 	"atlas/pkg/scheduler"
 	"atlas/pkg/sonar"
 	"atlas/pkg/stt"
@@ -95,6 +97,7 @@ func New(cfg *config.Config) (*Server, error) {
 
 	s.registerRoutes()
 	engine.ExecuteAction = s.executeScheduledAction
+	nluClient.SetCapabilitySource(s.capabilityRuntime)
 	return s, nil
 }
 
@@ -249,14 +252,19 @@ func (s *Server) processIncomingMessage(ctx context.Context, msg *telegram.Messa
 	chatID := msg.Chat.ID
 
 	// Feedback Imediato: Ativa indicador nativo ("ATLAS está digitando...") para o usuário saber que a mensagem foi recebida e compreendida
-	_ = s.tg.SendChatAction(ctx, chatID, "typing")
+	isAudio := msg.Voice != nil || msg.Audio != nil || msg.Document != nil && documents.IsAudio(msg.Document.FileName)
+	if !isAudio {
+		_ = s.tg.SendChatAction(ctx, chatID, "typing")
+	}
 
 	var inputText string
+	var transcript string
+	transcribed := false
 
 	// 1. Extração de Texto, Voz, Áudios ou Documentos (com Groq Whisper e Extrator de Documentos)
 	if msg.Text != "" {
 		inputText = strings.TrimSpace(msg.Text)
-	} else if msg.Caption != "" && msg.Document == nil && msg.Audio == nil {
+	} else if msg.Caption != "" && msg.Document == nil && msg.Audio == nil && msg.Voice == nil {
 		inputText = strings.TrimSpace(msg.Caption)
 	} else if msg.Voice != nil && msg.Voice.FileID != "" {
 		tmpPath, err := s.tg.DownloadVoiceFile(ctx, msg.Voice.FileID)
@@ -274,6 +282,11 @@ func (s *Server) processIncomingMessage(ctx context.Context, msg *telegram.Messa
 			return
 		}
 		inputText = strings.TrimSpace(transcription)
+		transcript = inputText
+		transcribed = true
+		if msg.Caption != "" {
+			inputText = fmt.Sprintf("%s\n\n[Transcrição do Áudio]: %s", msg.Caption, transcript)
+		}
 	} else if msg.Audio != nil && msg.Audio.FileID != "" {
 		tmpPath, err := s.tg.DownloadFileToTemp(ctx, msg.Audio.FileID, "atlas_audio_*")
 		if err != nil {
@@ -294,6 +307,8 @@ func (s *Server) processIncomingMessage(ctx context.Context, msg *telegram.Messa
 		} else {
 			inputText = strings.TrimSpace(transcription)
 		}
+		transcript = strings.TrimSpace(transcription)
+		transcribed = true
 	} else if msg.Document != nil && msg.Document.FileID != "" {
 		if documents.IsAudio(msg.Document.FileName) {
 			tmpPath, err := s.tg.DownloadFileToTemp(ctx, msg.Document.FileID, "atlas_doc_audio_*")
@@ -315,6 +330,8 @@ func (s *Server) processIncomingMessage(ctx context.Context, msg *telegram.Messa
 			} else {
 				inputText = strings.TrimSpace(transcription)
 			}
+			transcript = strings.TrimSpace(transcription)
+			transcribed = true
 		} else if documents.IsSupportedDocument(msg.Document.FileName) {
 			_ = s.tg.SendChatAction(ctx, chatID, "typing")
 			_ = s.tg.SendMessage(ctx, chatID, fmt.Sprintf("📄 *Documento recebido:* `%s`\n_Lendo e estruturando síntese executiva..._", msg.Document.FileName))
@@ -346,6 +363,13 @@ func (s *Server) processIncomingMessage(ctx context.Context, msg *telegram.Messa
 		}
 	}
 
+	if transcribed {
+		if err := s.tg.SendPlainMessage(ctx, chatID, "Transcrição: '"+transcript+"'"); err != nil {
+			log.Printf("[Áudio] Não foi possível entregar a transcrição antes da ação")
+			return
+		}
+		_ = s.tg.SendChatAction(ctx, chatID, "typing")
+	}
 	if inputText == "" {
 		return
 	}
@@ -368,7 +392,21 @@ func (s *Server) processIncomingMessage(ctx context.Context, msg *telegram.Messa
 
 	// 2.1 Confirmação Pendente (Sim/Não para substituição de eventos)
 	if pending, err := s.db.GetPendingConfirmation(ctx, chatID); err == nil && pending != nil {
-		if pending.Tipo == "planejar_dia" {
+		if pending.Tipo == "simular_compra" {
+			if handled, reply := s.handlePurchaseSalary(ctx, chatID, inputText, pending); handled {
+				_ = s.db.RecordHistory(ctx, "user", inputText)
+				_ = s.tg.SendMessage(ctx, chatID, reply)
+				_ = s.db.RecordHistory(ctx, "assistant", reply)
+				return
+			}
+		} else if pending.Tipo == "duracao_evento" {
+			if handled, reply := s.handleEventDuration(ctx, chatID, inputText, pending); handled {
+				_ = s.db.RecordHistory(ctx, "user", inputText)
+				_ = s.tg.SendMessage(ctx, chatID, reply)
+				_ = s.db.RecordHistory(ctx, "assistant", reply)
+				return
+			}
+		} else if pending.Tipo == "planejar_dia" {
 			if handled, reply := s.handlePendingPlan(ctx, chatID, inputText, pending); handled {
 				_ = s.db.RecordHistory(ctx, "user", inputText)
 				_ = s.tg.SendMessage(ctx, chatID, reply)
@@ -415,12 +453,16 @@ func (s *Server) processIncomingMessage(ctx context.Context, msg *telegram.Messa
 	_ = s.db.RecordHistory(ctx, "user", inputText)
 	memories, _ := s.db.GetAllUserMemories(ctx)
 	latestIdeia, _ := s.db.GetLatestActiveIdeia(ctx)
-	activeEvents, _ := s.db.GetUpcomingEvents(ctx, 10)
+	activeEvents, _ := s.db.ActiveEvents(ctx)
 	routines, _ := s.db.GetAllRoutines(ctx)
+	routineCategories := map[int64]string{}
+	for _, routine := range routines {
+		routineCategories[routine.ID] = scheduler.RoutineKind(routine)
+	}
 	tasks, _ := s.db.DailyTasks(ctx, s.today())
 	briefingItems, _ := s.briefingIntentContext(ctx)
 
-	intent, err := s.nluClient.ParseIntent(ctx, inputText, currentDatetime, history, memories, latestIdeia, activeEvents, nlu.IntentContext{Routines: routines, Tasks: tasks, Briefing: briefingItems})
+	intent, err := s.nluClient.ParseIntent(ctx, inputText, currentDatetime, history, memories, latestIdeia, activeEvents, nlu.IntentContext{Routines: routines, RoutineCategories: routineCategories, Tasks: tasks, Briefing: briefingItems})
 	if err != nil {
 		log.Printf("[Erro NLU] %v\n", err)
 		reply := "⚠️ Ocorreu uma oscilação no processamento do seu pensamento. Repita de forma mais concisa."
@@ -447,6 +489,23 @@ func (s *Server) processIncomingMessage(ctx context.Context, msg *telegram.Messa
 			intent.DuracaoMin = 0
 		}
 	}
+	if intent.Tipo == "evento" || intent.Acao == "alterar_evento" {
+		clock := intent.Horario
+		if clock == "" && len(intent.HorarioOficial) >= 16 {
+			clock = intent.HorarioOficial[11:16]
+		}
+		minutes, found, timeErr := schedule.ExtractDuration(inputText, clock, false)
+		if timeErr != nil {
+			reply := "⚠️ " + timeErr.Error()
+			_ = s.tg.SendMessage(ctx, chatID, reply)
+			return
+		}
+		if found {
+			intent.DuracaoMin = minutes
+		} else {
+			intent.DuracaoMin = 0
+		}
+	}
 
 	// 3.1 Perfil de Pesquisa Profunda (Tokens de Output Irrestritos)
 	lowerInput := strings.ToLower(inputText)
@@ -464,7 +523,7 @@ func (s *Server) processIncomingMessage(ctx context.Context, msg *telegram.Messa
 		strings.Contains(lowerInput, "pesquise sobre")
 
 	if isResearch && (intent.Tipo == "conversa" || intent.Tipo == "pesquisa") {
-		waitingMsg := "🔬 *Perfil de Pesquisa Ativado (Tokens de Output Irrestritos)*\n\nCompilando síntese exaustiva, múltiplos artigos e referências completas sem cortes..."
+		waitingMsg := "🔬 *Pesquisa e síntese aprofundada*\n\nOrganizando a análise dentro dos limites do provedor."
 		_ = s.tg.SendMessage(ctx, chatID, waitingMsg)
 
 		res, err := s.nluClient.ResearchAnalyze(ctx, inputText, history)
@@ -561,20 +620,13 @@ func (s *Server) processIncomingMessage(ctx context.Context, msg *telegram.Messa
 		}
 
 	case "evento":
-		existingEv, _ := s.findExistingEventForAdjustment(ctx, intent, inputText)
-		if existingEv != nil {
-			intentBytes, _ := json.Marshal(intent)
-			_ = s.db.SavePendingConfirmation(ctx, chatID, "substituir_evento", existingEv.ID, string(intentBytes))
-
-			timeInfo := existingEv.HorarioOficial
-			if existingEv.HorarioTime != "" {
-				timeInfo = existingEv.HorarioTime
-			}
-			reply = fmt.Sprintf("⚠️ Identifiquei o compromisso existente: *%s* (marcado para %s).\n\nEntão é pra eu apagar esse e refazer?\n*(Responda Sim ou Não)*", existingEv.Descricao, timeInfo)
-			break
+		if adjustmentRequest(inputText) {
+			reply = s.alterEvents(ctx, intent, inputText)
+		} else if intent.DuracaoMin <= 0 {
+			reply = s.requestEventDuration(ctx, chatID, intent)
+		} else {
+			reply = s.createEventoFromIntent(ctx, intent)
 		}
-
-		reply = s.createEventoFromIntent(ctx, intent)
 
 	case "objetivo":
 		var prazoPtr *string
@@ -596,24 +648,14 @@ func (s *Server) processIncomingMessage(ctx context.Context, msg *telegram.Messa
 	case "acao_programada":
 		reply = s.saveScheduledAction(ctx, intent)
 	case "lembrete_diario":
-		if intent.Horario == "" || intent.Mensagem == "" {
-			reply = "⚠️ Por favor, especifique o horário (ex: 09:00) e a mensagem que deseja programar."
-		} else {
-			nome := intent.Mensagem
-			if len(nome) > 30 {
-				nome = nome[:27] + "..."
-			}
-			_, err := s.db.InsertRoutine(ctx, nome, intent.Horario, "custom", &intent.Mensagem)
-			if err != nil {
-				log.Printf("[Erro DB Routine] %v\n", err)
-				reply = "⚠️ Falha ao salvar a programação."
-			} else {
-				reply = fmt.Sprintf("✅ *Programado!*\n\nTodo dia às *%s* vou te mandar:\n👉 \"%s\"", intent.Horario, intent.Mensagem)
-			}
-		}
+		reply = s.createReminder(ctx, intent)
 
 	case "acao":
-		if intent.Acao == "planejar_dia" {
+		if intent.Acao == "simular_compra" || intent.Acao == "definir_salario" {
+			reply = s.purchaseAction(ctx, chatID, intent)
+		} else if intent.Acao == "alterar_evento" {
+			reply = s.alterEvents(ctx, intent, inputText)
+		} else if intent.Acao == "planejar_dia" {
 			reply = s.startDayPlan(ctx, chatID, intent)
 		} else if intent.Acao == "exportar_pdf" {
 			reply = s.exportPDF(ctx, chatID, intent)
@@ -669,24 +711,14 @@ func (s *Server) handlePendingConfirmation(ctx context.Context, chatID int64, in
 			return true, "⚠️ Ocorreu um erro ao recuperar os dados do novo compromisso. Por favor, solicite novamente."
 		}
 
-		oldEventDesc := ""
-		if pending.EventoID > 0 {
-			if oldEv, err := s.db.GetEventoByID(ctx, pending.EventoID); err == nil && oldEv != nil {
-				oldEventDesc = oldEv.Descricao
-			}
-			if isYes {
-				_ = s.db.DeleteEvento(ctx, pending.EventoID)
-			}
-		}
-
-		newReply := s.createEventoFromIntent(ctx, &intent)
-		if isYes && oldEventDesc != "" {
-			return true, fmt.Sprintf("🗑️ Compromisso anterior (*%s*) apagado com sucesso.\n\n%s", oldEventDesc, newReply)
-		}
 		if isKeepBoth {
-			return true, fmt.Sprintf("✅ Mantive o compromisso anterior e adicionei o novo:\n\n%s", newReply)
+			return true, s.createEventoFromIntent(ctx, &intent)
 		}
-		return true, newReply
+		intent.ID = pending.EventoID
+		if old, err := s.db.GetEventoByID(ctx, pending.EventoID); err == nil && old != nil && old.Frequencia == "semanal" && intent.DiaSemana != nil && !equalWeekday(old.DiaSemana, intent.DiaSemana) {
+			return true, "O dia proposto não corresponde à linha selecionada. Mantive os registros; consulte /agenda e indique o ID correto."
+		}
+		return true, s.alterEvents(ctx, &intent, "")
 
 	case "limpar_agenda":
 		if isNo {
@@ -701,16 +733,16 @@ func (s *Server) handlePendingConfirmation(ctx context.Context, chatID int64, in
 		}
 		return true, "⚠️ Confirmação não compreendida. Por segurança, sua agenda foi mantida intacta."
 
-	case "limpar_lembretes":
+	case "limpar_lembretes", "limpar_automacoes":
 		if isNo {
-			return true, "👍 Operação cancelada. Seus lembretes e rotinas continuam intactos."
+			return true, "Operação cancelada. Lembretes e automações foram mantidos."
 		}
 		if isYes {
-			total, err := s.db.ClearAllRoutines(ctx)
-			if err != nil {
-				return true, "⚠️ Ocorreu um erro ao tentar limpar os lembretes."
+			kind := "lembrete"
+			if pending.Tipo == "limpar_automacoes" {
+				kind = "automacao"
 			}
-			return true, fmt.Sprintf("🗑️ Todos os *%d* lembretes e rotinas programadas foram removidos com sucesso.", total)
+			return true, s.clearScheduledConfirmation(ctx, kind, pending.NovoEventoJSON)
 		}
 		return true, "⚠️ Confirmação não compreendida. Por segurança, seus lembretes foram mantidos intactos."
 
@@ -729,47 +761,10 @@ func (s *Server) handlePendingConfirmation(ctx context.Context, chatID int64, in
 	return false, ""
 }
 
-func (s *Server) findExistingEventForAdjustment(ctx context.Context, intent *nlu.IntentResult, inputText string) (*database.Evento, error) {
-	// 1. NLU identificou diretamente pelo ID
-	if intent.SubstituirEventoID > 0 {
-		if ev, err := s.db.GetEventoByID(ctx, intent.SubstituirEventoID); err == nil && ev != nil && ev.Status == "pendente" {
-			return ev, nil
-		}
-	}
-
-	// 2. Busca por similaridade de descrição com evento ativo pendente
-	if strings.TrimSpace(intent.Descricao) != "" {
-		if ev, err := s.db.FindSimilarActiveEvento(ctx, intent.Descricao); err == nil && ev != nil {
-			return ev, nil
-		}
-	}
-
-	// 3. Checa palavras de correção no texto e recupera o último evento criado
-	lower := strings.ToLower(inputText)
-	isCorrection := strings.Contains(lower, "errad") ||
-		strings.Contains(lower, "errei") ||
-		strings.Contains(lower, "ajust") ||
-		strings.Contains(lower, "corrig") ||
-		strings.Contains(lower, "mudar") ||
-		strings.Contains(lower, "trocar") ||
-		strings.Contains(lower, "ao inves") ||
-		strings.Contains(lower, "ao invés") ||
-		strings.Contains(lower, "em vez") ||
-		strings.HasPrefix(lower, "não,") ||
-		strings.HasPrefix(lower, "nao,") ||
-		strings.HasPrefix(lower, "não ") ||
-		strings.HasPrefix(lower, "nao ")
-
-	if isCorrection {
-		if ev, err := s.db.GetLatestPendingEvento(ctx); err == nil && ev != nil {
-			return ev, nil
-		}
-	}
-
-	return nil, nil
-}
-
 func (s *Server) createEventoFromIntent(ctx context.Context, intent *nlu.IntentResult) string {
+	if intent.DuracaoMin < 1 {
+		return "Quanto tempo esse compromisso vai durar? Informe a duração antes de cadastrar."
+	}
 	deslocamento, preparo := 25, 35
 	if intent.EstimativaDeslocamentoMin != nil && *intent.EstimativaDeslocamentoMin >= 0 {
 		deslocamento = *intent.EstimativaDeslocamentoMin
@@ -778,7 +773,6 @@ func (s *Server) createEventoFromIntent(ctx context.Context, intent *nlu.IntentR
 		preparo = *intent.EstimativaPreparoMin
 	}
 	now := time.Now().In(s.cfg.Location)
-	diasNomes := []string{"Domingo", "Segunda-feira", "Terça-feira", "Quarta-feira", "Quinta-feira", "Sexta-feira", "Sábado"}
 
 	switch intent.Frequencia {
 	case "diario":
@@ -804,13 +798,12 @@ func (s *Server) createEventoFromIntent(ctx context.Context, intent *nlu.IntentR
 		refTime := time.Date(now.Year(), now.Month(), now.Day(), hh, mm, 0, 0, s.cfg.Location)
 		buffers := calculator.Calculate(refTime, deslocamento, preparo, calculator.DefaultDelayMargin)
 
-		_, err := s.db.InsertEventoCompleto(ctx, intent.Descricao, "", buffers.BufferPrep.Format("15:04"), buffers.BufferLeave.Format("15:04"), "diario", nil, nil, horarioHM, deslocamento, preparo)
+		id, err := s.db.InsertEventoCompleto(ctx, intent.Descricao, "", buffers.BufferPrep.Format("15:04"), buffers.BufferLeave.Format("15:04"), "diario", nil, nil, horarioHM, deslocamento, preparo, &intent.DuracaoMin)
 		if err != nil {
 			log.Printf("[Erro DB Evento Diario] %v\n", err)
-			return "⚠️ Falha ao agendar compromisso diário."
+			return eventSaveFailure(err)
 		}
-		return fmt.Sprintf("🎯 *Compromisso Diário Agendado (+15%% margem determinística)*\n\n📌 *Evento:* %s\n🔄 *Frequência:* Todo dia às *%s*\n🛁 *Preparo:* %s\n🚗 *Saída:* %s\n🛡️ *Margem:* +%d min de segurança diária",
-			intent.Descricao, horarioHM, buffers.BufferPrep.Format("15:04"), buffers.BufferLeave.Format("15:04"), buffers.MarginMinutes)
+		return s.createdEventsReply(ctx, []int64{id})
 
 	case "semanal":
 		horarioHM := intent.Horario
@@ -837,36 +830,43 @@ func (s *Server) createEventoFromIntent(ctx context.Context, intent *nlu.IntentR
 
 		// Múltiplos dias da semana ou exceções (ex: "exceto domingo e segunda", "segunda a sexta", "terça e quinta")
 		if len(intent.DiasSemana) > 0 {
-			var insertedDays []string
+			var occurrences []database.Evento
+			seenDays := map[int]bool{}
 			for _, d := range intent.DiasSemana {
 				if d < 0 || d > 6 {
+					return "⚠️ Dia da semana inválido; nenhum registro foi alterado."
+				}
+				if seenDays[d] {
 					continue
 				}
+				seenDays[d] = true
 				dayVal := d
-				_, err := s.db.InsertEventoCompleto(ctx, intent.Descricao, "", buffers.BufferPrep.Format("15:04"), buffers.BufferLeave.Format("15:04"), "semanal", &dayVal, nil, horarioHM, deslocamento, preparo)
-				if err == nil {
-					insertedDays = append(insertedDays, diasNomes[dayVal])
-				}
+				occurrences = append(occurrences, database.Evento{Descricao: intent.Descricao, Frequencia: "semanal", DiaSemana: &dayVal, HorarioTime: horarioHM, HorarioBuffer1: buffers.BufferPrep.Format("15:04"), HorarioBuffer2: buffers.BufferLeave.Format("15:04"), DeslocamentoMin: deslocamento, PreparoMin: preparo, DuracaoMin: &intent.DuracaoMin})
 			}
-			if len(insertedDays) == 0 {
+			if len(occurrences) == 0 {
 				return "⚠️ Não foi possível identificar os dias da semana solicitados."
 			}
-			return fmt.Sprintf("🎯 *Compromisso Recorrente Agendado (+15%% margem determinística)*\n\n📌 *Evento:* %s\n🔁 *Dias:* %s às *%s*\n🛁 *Preparo:* %s\n🚗 *Saída:* %s\n🛡️ *Margem:* +%d min de segurança diária",
-				intent.Descricao, strings.Join(insertedDays, ", "), horarioHM, buffers.BufferPrep.Format("15:04"), buffers.BufferLeave.Format("15:04"), buffers.MarginMinutes)
+			ids, err := s.db.InsertEventSet(ctx, occurrences)
+			if err != nil {
+				return eventSaveFailure(err)
+			}
+			return s.createdEventsReply(ctx, ids)
 		}
 
-		diaSem := 1 // Default Segunda-feira se não especificado
+		if intent.DiaSemana == nil || *intent.DiaSemana < 0 || *intent.DiaSemana > 6 {
+			return "Qual dia da semana para esse compromisso? Não vou escolher um dia por você."
+		}
+		diaSem := 0
 		if intent.DiaSemana != nil && *intent.DiaSemana >= 0 && *intent.DiaSemana <= 6 {
 			diaSem = *intent.DiaSemana
 		}
 
-		_, err := s.db.InsertEventoCompleto(ctx, intent.Descricao, "", buffers.BufferPrep.Format("15:04"), buffers.BufferLeave.Format("15:04"), "semanal", &diaSem, nil, horarioHM, deslocamento, preparo)
+		id, err := s.db.InsertEventoCompleto(ctx, intent.Descricao, "", buffers.BufferPrep.Format("15:04"), buffers.BufferLeave.Format("15:04"), "semanal", &diaSem, nil, horarioHM, deslocamento, preparo, &intent.DuracaoMin)
 		if err != nil {
 			log.Printf("[Erro DB Evento Semanal] %v\n", err)
-			return "⚠️ Falha ao agendar compromisso semanal."
+			return eventSaveFailure(err)
 		}
-		return fmt.Sprintf("🎯 *Compromisso Semanal Agendado (+15%% margem determinística)*\n\n📌 *Evento:* %s\n🔁 *Frequência:* Toda *%s* às *%s*\n🛁 *Preparo:* %s\n🚗 *Saída:* %s\n🛡️ *Margem:* +%d min de segurança",
-			intent.Descricao, diasNomes[diaSem], horarioHM, buffers.BufferPrep.Format("15:04"), buffers.BufferLeave.Format("15:04"), buffers.MarginMinutes)
+		return s.createdEventsReply(ctx, []int64{id})
 
 	case "mensal":
 		horarioHM := intent.Horario
@@ -881,7 +881,10 @@ func (s *Server) createEventoFromIntent(ctx context.Context, intent *nlu.IntentR
 		if _, err := time.Parse("15:04", horarioHM); err != nil {
 			return "⚠️ Informe horário válido, como 08:30."
 		}
-		diaMes := 1
+		if intent.DiaMes == nil || *intent.DiaMes < 1 || *intent.DiaMes > 31 {
+			return "Qual dia do mês para esse compromisso?"
+		}
+		diaMes := 0
 		if intent.DiaMes != nil && *intent.DiaMes >= 1 && *intent.DiaMes <= 31 {
 			diaMes = *intent.DiaMes
 		}
@@ -895,13 +898,12 @@ func (s *Server) createEventoFromIntent(ctx context.Context, intent *nlu.IntentR
 		refTime := time.Date(now.Year(), now.Month(), now.Day(), hh, mm, 0, 0, s.cfg.Location)
 		buffers := calculator.Calculate(refTime, deslocamento, preparo, calculator.DefaultDelayMargin)
 
-		_, err := s.db.InsertEventoCompleto(ctx, intent.Descricao, "", buffers.BufferPrep.Format("15:04"), buffers.BufferLeave.Format("15:04"), "mensal", nil, &diaMes, horarioHM, deslocamento, preparo)
+		id, err := s.db.InsertEventoCompleto(ctx, intent.Descricao, "", buffers.BufferPrep.Format("15:04"), buffers.BufferLeave.Format("15:04"), "mensal", nil, &diaMes, horarioHM, deslocamento, preparo, &intent.DuracaoMin)
 		if err != nil {
 			log.Printf("[Erro DB Evento Mensal] %v\n", err)
-			return "⚠️ Falha ao agendar compromisso mensal."
+			return eventSaveFailure(err)
 		}
-		return fmt.Sprintf("🎯 *Compromisso Mensal Agendado (+15%% margem determinística)*\n\n📌 *Evento:* %s\n🗓️ *Frequência:* Todo dia *%d* de cada mês às *%s*\n🛁 *Preparo:* %s\n🚗 *Saída:* %s\n🛡️ *Margem:* +%d min de segurança\n_Nota: Em meses com menos de %d dias (como fevereiro ou meses de 30 dias), o ATLAS ajusta automaticamente para o último dia do mês para garantir seu cumprimento!_",
-			intent.Descricao, diaMes, horarioHM, buffers.BufferPrep.Format("15:04"), buffers.BufferLeave.Format("15:04"), buffers.MarginMinutes, diaMes)
+		return s.createdEventsReply(ctx, []int64{id})
 
 	default: // "pontual"
 		parsedTime, err := parseTimeFlexible(intent.HorarioOficial, s.cfg.Location)
@@ -913,18 +915,38 @@ func (s *Server) createEventoFromIntent(ctx context.Context, intent *nlu.IntentR
 		b2Str := database.FormatDateTime(buffers.BufferLeave)
 		oficialStr := database.FormatDateTime(buffers.OfficialTime)
 
-		_, err = s.db.InsertEventoCompleto(ctx, intent.Descricao, oficialStr, b1Str, b2Str, "pontual", nil, nil, parsedTime.Format("15:04"), deslocamento, preparo)
+		id, err := s.db.InsertEventoCompleto(ctx, intent.Descricao, oficialStr, b1Str, b2Str, "pontual", nil, nil, parsedTime.Format("15:04"), deslocamento, preparo, &intent.DuracaoMin)
 		if err != nil {
 			log.Printf("[Erro DB Evento Pontual] %v\n", err)
-			return "⚠️ Falha ao agendar evento."
+			return eventSaveFailure(err)
 		}
-		return fmt.Sprintf("🎯 *Compromisso Agendado (+15%% margem determinística)*\n\n📌 *Evento:* %s\n⏰ *Oficial:* %s\n🛁 *Preparo:* %s\n🚗 *Saída:* %s\n🛡️ *Margem:* +%d min de segurança",
-			intent.Descricao, oficialStr, b1Str, b2Str, buffers.MarginMinutes)
+		return s.createdEventsReply(ctx, []int64{id})
 	}
 }
 
 func (s *Server) executeAppAction(ctx context.Context, intent *nlu.IntentResult) string {
+	if result, handled := s.executeNativeAction(ctx, intent); handled {
+		return result
+	}
 	switch intent.Acao {
+	case "ver_dia":
+		text, err := s.engine.BuildDefaultBriefing(ctx, s.today())
+		if err != nil {
+			return "⚠️ Não foi possível consultar o dia."
+		}
+		return strings.Replace(text, "Briefing Matinal", "Visão do dia", 1)
+	case "listar_automacoes":
+		return s.scheduledList(ctx, "automacao")
+	case "limpar_automacoes":
+		return s.requestClearScheduled(ctx, s.cfg.TelegramChatID, "automacao")
+	case "simular_compra", "definir_salario":
+		return s.purchaseAction(ctx, s.cfg.TelegramChatID, intent)
+	case "alterar_evento":
+		return s.alterEvents(ctx, intent, "")
+	case "listar_agenda_hoje":
+		return s.agendaView(ctx, s.today())
+	case "ver_capacidades":
+		return s.describeCapabilities(intent.Termo)
 	case "planejar_dia":
 		return s.startDayPlan(ctx, s.cfg.TelegramChatID, intent)
 	case "exportar_pdf":
@@ -1100,31 +1122,18 @@ func (s *Server) executeAppAction(ctx context.Context, intent *nlu.IntentResult)
 		return fmt.Sprintf("📄 *Resumo Executivo do Link:*\n\n%s\n\n🔗 *Fonte:* %s", summaryResp.Text, link)
 
 	case "alterar_rotina":
-		if intent.Horario == "" {
-			return "⚠️ Por favor, especifique o novo horário (ex: 08:30)."
-		}
-		if intent.ID > 0 {
-			if err := s.db.UpdateRoutineTime(ctx, intent.ID, intent.Horario); err == nil {
-				return fmt.Sprintf("⏰ Horário da rotina [%d] atualizado para *%s*.", intent.ID, intent.Horario)
-			}
-		}
-		return "⚠️ Não foi possível alterar o horário da rotina."
+		return s.manageScheduled(ctx, intent.Categoria, "horario", intent.ID, intent.Termo, intent.Horario)
 
 	case "toggle_rotina":
-		if intent.ID > 0 {
-			if active, err := s.db.ToggleRoutine(ctx, intent.ID); err == nil {
-				status := "desativada 🔴"
-				if active {
-					status = "ativada 🟢"
-				}
-				return fmt.Sprintf("Rotina [%d] %s.", intent.ID, status)
-			}
-		}
-		return "⚠️ Não consegui alterar o status da rotina."
+		return s.manageScheduled(ctx, intent.Categoria, "toggle", intent.ID, intent.Termo, "")
 
 	case "concluir_evento":
+		date, err := s.taskDate(intent.Data)
+		if err != nil {
+			return "⚠️ " + err.Error()
+		}
 		if intent.ID > 0 {
-			if err := s.db.CompleteEvent(ctx, intent.ID, s.today()); err != nil {
+			if err := s.db.CompleteEvent(ctx, intent.ID, date); err != nil {
 				return "⚠️ Não foi possível concluir esse compromisso."
 			}
 			return fmt.Sprintf("✅ Compromisso [%d] marcado como concluído.", intent.ID)
@@ -1132,7 +1141,7 @@ func (s *Server) executeAppAction(ctx context.Context, intent *nlu.IntentResult)
 		if intent.Termo != "" {
 			id, desc, err := s.db.FindEventoByDesc(ctx, intent.Termo)
 			if err == nil {
-				if err := s.db.CompleteEvent(ctx, id, s.today()); err != nil {
+				if err := s.db.CompleteEvent(ctx, id, date); err != nil {
 					return "⚠️ Não foi possível concluir esse compromisso."
 				}
 				return fmt.Sprintf("✅ Compromisso *%s* marcado como concluído com sucesso.", desc)
@@ -1151,10 +1160,6 @@ func (s *Server) executeAppAction(ctx context.Context, intent *nlu.IntentResult)
 				_ = s.db.DeleteEvento(ctx, latestEv.ID)
 				return fmt.Sprintf("🗑️ Último compromisso agendado (*%s*) foi excluído.", latestEv.Descricao)
 			}
-			if latestRt, err := s.db.GetLatestRoutine(ctx); err == nil && latestRt != nil {
-				_ = s.db.DeleteRoutine(ctx, latestRt.ID)
-				return fmt.Sprintf("🗑️ Último lembrete/rotina (*%s*) foi excluído.", latestRt.Nome)
-			}
 			return "⚠️ Não encontrei nenhum compromisso recente pendente para excluir."
 		}
 
@@ -1167,44 +1172,10 @@ func (s *Server) executeAppAction(ctx context.Context, intent *nlu.IntentResult)
 			return fmt.Sprintf("🗑️ Compromisso *%s* excluído da sua agenda.", desc)
 		}
 
-		// 2. Se não achou na agenda, busca nas rotinas/lembretes (generalização)
-		if nome, err := s.db.DeleteRoutineByName(ctx, cleanTerm); err == nil && nome != "" {
-			return fmt.Sprintf("🗑️ Lembrete/rotina *%s* excluído com sucesso.", nome)
-		}
-
-		return fmt.Sprintf("⚠️ Não localizei nenhum compromisso ou lembrete correspondente a '%s'.", intent.Termo)
+		return fmt.Sprintf("⚠️ Não localizei compromisso correspondente a '%s'. Lembretes e automações não foram alterados.", intent.Termo)
 
 	case "apagar_rotina":
-		if intent.ID > 0 {
-			if err := s.db.DeleteRoutine(ctx, intent.ID); err == nil {
-				return fmt.Sprintf("🗑️ Rotina [%d] apagada.", intent.ID)
-			}
-		}
-		cleanTerm := strings.ToLower(strings.TrimSpace(intent.Termo))
-		if cleanTerm == "isso" || cleanTerm == "esse" || cleanTerm == "este" || cleanTerm == "ultimo" || cleanTerm == "" {
-			if latestRt, err := s.db.GetLatestRoutine(ctx); err == nil && latestRt != nil {
-				_ = s.db.DeleteRoutine(ctx, latestRt.ID)
-				return fmt.Sprintf("🗑️ Último lembrete/rotina (*%s*) foi excluído.", latestRt.Nome)
-			}
-			if latestEv, err := s.db.GetLatestPendingEvento(ctx); err == nil && latestEv != nil {
-				_ = s.db.DeleteEvento(ctx, latestEv.ID)
-				return fmt.Sprintf("🗑️ Último compromisso agendado (*%s*) foi excluído.", latestEv.Descricao)
-			}
-			return "⚠️ Não encontrei nenhuma rotina recente para apagar."
-		}
-
-		// 1. Tenta deletar rotina
-		if nome, err := s.db.DeleteRoutineByName(ctx, cleanTerm); err == nil && nome != "" {
-			return fmt.Sprintf("🗑️ Lembrete/rotina *%s* excluído com sucesso.", nome)
-		}
-
-		// 2. Se não achou em rotinas, busca nos eventos da agenda (generalização)
-		affected, desc, err := s.db.DeleteEventosByDesc(ctx, cleanTerm)
-		if err == nil && affected > 0 {
-			return fmt.Sprintf("🗑️ Compromisso *%s* excluído da agenda.", desc)
-		}
-
-		return fmt.Sprintf("⚠️ Não localizei nenhuma rotina ou compromisso correspondente a '%s'.", intent.Termo)
+		return s.manageScheduled(ctx, intent.Categoria, "excluir", intent.ID, intent.Termo, "")
 
 	case "limpar_tudo", "delete_tudo":
 		countEv, _ := s.db.CountAllEventos(ctx)
@@ -1213,7 +1184,7 @@ func (s *Server) executeAppAction(ctx context.Context, intent *nlu.IntentResult)
 			return "✨ O sistema já está completamente limpo. Não há compromissos nem lembretes registrados."
 		}
 		_ = s.db.SavePendingConfirmation(ctx, s.cfg.TelegramChatID, "limpar_tudo", 0, "")
-		return fmt.Sprintf("⚠️ *Atenção:* Você tem certeza de que deseja *apagar TUDO* (%d compromisso(s) e %d lembrete(s))?\n\nEsta ação é permanente e irreversível.\n\n👉 Responda com *Sim* para confirmar ou *Não* para cancelar.", countEv, countRt)
+		return fmt.Sprintf("Excluir a agenda (%d compromissos) e os envios programados (%d lembretes/automações)? Tarefas, planos, memória e finanças ficam preservados. Responda Sim ou Não.", countEv, countRt)
 
 	case "limpar_agenda":
 		count, _ := s.db.CountAllEventos(ctx)
@@ -1224,12 +1195,7 @@ func (s *Server) executeAppAction(ctx context.Context, intent *nlu.IntentResult)
 		return fmt.Sprintf("⚠️ *Atenção:* Você tem certeza de que deseja *apagar todos os %d compromissos* da sua agenda?\n\nEsta ação é permanente e irreversível.\n\n👉 Responda com *Sim* para confirmar ou *Não* para cancelar.", count)
 
 	case "limpar_lembretes":
-		count, _ := s.db.CountAllRoutines(ctx)
-		if count == 0 {
-			return "⏰ Nenhum lembrete ou rotina cadastrada no momento."
-		}
-		_ = s.db.SavePendingConfirmation(ctx, s.cfg.TelegramChatID, "limpar_lembretes", 0, "")
-		return fmt.Sprintf("⚠️ *Atenção:* Você tem certeza de que deseja *apagar todos os %d lembretes e rotinas diárias*?\n\nEsta ação é permanente e irreversível.\n\n👉 Responda com *Sim* para confirmar ou *Não* para cancelar.", count)
+		return s.requestClearScheduled(ctx, s.cfg.TelegramChatID, "lembrete")
 
 	case "atualizar_meta":
 		if intent.Termo != "" {
@@ -1247,7 +1213,7 @@ func (s *Server) executeAppAction(ctx context.Context, intent *nlu.IntentResult)
 
 	case "fazer_backup":
 		if s.cfg.TursoDatabaseURL != "" {
-			return "🛡️ O banco de dados está operando no Turso Cloud com replicação e backups automáticos na nuvem."
+			return "O banco está no Turso. Este comando não exporta arquivo local; a configuração de snapshots e backups deve ser consultada no provedor."
 		}
 		caption := fmt.Sprintf("🛡️ Backup solicitado em %s", time.Now().In(s.cfg.Location).Format("2006-01-02 15:04:05"))
 		if err := s.tg.SendDocument(ctx, s.cfg.TelegramChatID, s.cfg.DBPath, caption); err == nil {
@@ -1256,41 +1222,13 @@ func (s *Server) executeAppAction(ctx context.Context, intent *nlu.IntentResult)
 		return "⚠️ Falha ao gerar o arquivo de backup."
 
 	case "listar_agenda":
-		now := time.Now().In(s.cfg.Location)
-		todayStr := now.Format("2006-01-02")
-		events, _ := s.db.GetEventsForDay(ctx, todayStr)
-		if len(events) == 0 {
-			return fmt.Sprintf("📅 Não há compromissos agendados para hoje (%s).", todayStr)
-		}
-		var sb strings.Builder
-		sb.WriteString(fmt.Sprintf("📅 *Agenda de Hoje (%s):*\n\n", todayStr))
-		for _, ev := range events {
-			sb.WriteString(fmt.Sprintf("📌 *%s*\n  ⏰ Oficial: %s | 🚗 Saída: %s\n\n", ev.Descricao, ev.HorarioOficial, ev.HorarioBuffer2))
-		}
-		return sb.String()
+		return s.agendaView(ctx, intent.Data)
 
 	case "ver_calendario", "calendario", "ver_mes":
 		return s.formatMonthlyCalendarView(ctx)
 
 	case "listar_lembretes":
-		routines, _ := s.db.GetAllRoutines(ctx)
-		if len(routines) == 0 {
-			return "Nenhum lembrete ou rotina cadastrada."
-		}
-		var sb strings.Builder
-		sb.WriteString("⏰ *Lembretes e Rotinas Diárias:*\n\n")
-		for _, r := range routines {
-			status := "🟢"
-			if r.Ativo == 0 {
-				status = "🔴"
-			}
-			desc := r.Nome
-			if r.Tipo == "custom" && r.PromptCustom != nil && *r.PromptCustom != "" {
-				desc = fmt.Sprintf("\"%s\"", *r.PromptCustom)
-			}
-			sb.WriteString(fmt.Sprintf("%s *[%d]* às *%s* — %s\n", status, r.ID, r.Horario, desc))
-		}
-		return sb.String()
+		return s.scheduledList(ctx, "lembrete")
 
 	case "ver_perfil":
 		mems, err := s.db.GetAllUserMemories(ctx)
@@ -1314,6 +1252,48 @@ func (s *Server) handleCommand(ctx context.Context, chatID int64, cmdText string
 	cmd := strings.ToLower(parts[0])
 
 	switch cmd {
+	case "/dia":
+		text := s.executeAppAction(ctx, &nlu.IntentResult{Acao: "ver_dia"})
+		_ = s.tg.SendMessage(ctx, chatID, text)
+		_ = s.db.RecordHistory(ctx, "assistant", text)
+	case "/lembrete", "/automacao":
+		text := s.scheduledCommand(ctx, strings.TrimPrefix(cmd, "/"), strings.TrimSpace(strings.TrimPrefix(cmdText, parts[0])))
+		_ = s.tg.SendMessage(ctx, chatID, text)
+		_ = s.db.RecordHistory(ctx, "assistant", text)
+	case "/automacoes":
+		text := s.scheduledList(ctx, "automacao")
+		_ = s.tg.SendMessage(ctx, chatID, text)
+		_ = s.db.RecordHistory(ctx, "assistant", text)
+	case "/salario":
+		argument := strings.TrimSpace(strings.TrimPrefix(cmdText, parts[0]))
+		var text string
+		if argument == "" {
+			if value, ok := s.savedSalary(ctx); ok {
+				text = "Salário mensal salvo: " + finance.Money(value)
+			} else {
+				text = "Informe seu salário mensal, por exemplo: /salario 5000"
+			}
+		} else {
+			text = s.setSalary(ctx, argument)
+		}
+		_ = s.tg.SendMessage(ctx, chatID, text)
+		_ = s.db.RecordHistory(ctx, "assistant", text)
+	case "/simular_compra", "/comprar":
+		text := s.purchaseCommand(ctx, chatID, strings.TrimSpace(strings.TrimPrefix(cmdText, parts[0])))
+		_ = s.tg.SendMessage(ctx, chatID, text)
+		_ = s.db.RecordHistory(ctx, "assistant", text)
+	case "/agenda":
+		text := s.agendaView(ctx, strings.TrimSpace(strings.TrimPrefix(cmdText, parts[0])))
+		_ = s.tg.SendMessage(ctx, chatID, text)
+		_ = s.db.RecordHistory(ctx, "assistant", text)
+	case "/compromisso":
+		text := s.eventCommand(ctx, strings.TrimSpace(strings.TrimPrefix(cmdText, parts[0])))
+		_ = s.tg.SendMessage(ctx, chatID, text)
+		_ = s.db.RecordHistory(ctx, "assistant", text)
+	case "/capacidades", "/capabilities", "/recursos":
+		text := s.describeCapabilities(strings.TrimSpace(strings.TrimPrefix(cmdText, parts[0])))
+		_ = s.tg.SendMessage(ctx, chatID, text)
+		_ = s.db.RecordHistory(ctx, "assistant", text)
 	case "/pdf", "/exportar_pdf":
 		text := s.pdfCommand(ctx, chatID, strings.TrimSpace(strings.TrimPrefix(cmdText, parts[0])))
 		_ = s.tg.SendMessage(ctx, chatID, text)
@@ -1558,7 +1538,7 @@ func (s *Server) handleCommand(ctx context.Context, chatID int64, cmdText string
 			return
 		}
 		tema := strings.Join(parts[1:], " ")
-		waitingMsg := fmt.Sprintf("🔬 *Perfil de Pesquisa Ativado (Tokens de Output Irrestritos)*\n\nPesquisando a fundo sobre: *%s*...", tema)
+		waitingMsg := fmt.Sprintf("🔬 *Pesquisa e síntese aprofundada*\n\nTema: *%s*...", tema)
 		_ = s.tg.SendMessage(ctx, chatID, waitingMsg)
 
 		res, err := s.nluClient.ResearchAnalyze(ctx, tema, nil)
@@ -1590,24 +1570,21 @@ func (s *Server) handleCommand(ctx context.Context, chatID int64, cmdText string
 		view := s.formatMonthlyCalendarView(ctx)
 		_ = s.tg.SendMessage(ctx, chatID, view)
 
-	case "/rotinas", "/lembretes":
+	case "/rotinas":
+		text := "Envios programados (nome antigo: rotinas).\n\n" + s.scheduledList(ctx, "")
+		_ = s.tg.SendMessage(ctx, chatID, text)
+		_ = s.db.RecordHistory(ctx, "assistant", text)
+	case "/lembretes":
 		text := s.executeAppAction(ctx, &nlu.IntentResult{Acao: "listar_lembretes"})
 		_ = s.tg.SendMessage(ctx, chatID, text)
 		_ = s.db.RecordHistory(ctx, "assistant", text)
 
 	case "/apagar", "/remover", "/del":
-		if len(parts) >= 2 {
-			id, err := strconv.ParseInt(parts[1], 10, 64)
-			if err == nil {
-				if err := s.db.DeleteRoutine(ctx, id); err == nil {
-					_ = s.tg.SendMessage(ctx, chatID, fmt.Sprintf("🗑️ Programação [%d] apagada.", id))
-					return
-				}
-			}
-		}
-		_ = s.tg.SendMessage(ctx, chatID, "Uso: `/apagar <id>` (ex: `/apagar 3`)")
+		_ = s.tg.SendMessage(ctx, chatID, "Indique o tipo: /lembrete <ID> excluir ou /automacao <ID> excluir. Para compromissos, diga o nome/dia ou ID de /agenda. Nenhum item foi excluído.")
 
-	case "/limpar", "/limpar_agenda", "/limpar_eventos", "/reset_agenda":
+	case "/limpar":
+		_ = s.tg.SendMessage(ctx, chatID, "Escolha /limpar_agenda, /limpar_lembretes ou /limpar_automacoes. Nenhuma categoria foi alterada.")
+	case "/limpar_agenda", "/limpar_eventos", "/reset_agenda":
 		count, _ := s.db.CountAllEventos(ctx)
 		if count == 0 {
 			_ = s.tg.SendMessage(ctx, chatID, "📅 Sua agenda já está limpa. Não há nenhum compromisso registrado.")
@@ -1617,17 +1594,16 @@ func (s *Server) handleCommand(ctx context.Context, chatID int64, cmdText string
 		msg := fmt.Sprintf("⚠️ *Atenção:* Você tem certeza de que deseja *apagar todos os %d compromissos* da sua agenda?\n\nEsta ação é permanente e irreversível.\n\n👉 Responda com *Sim* para confirmar ou *Não* para cancelar.", count)
 		_ = s.tg.SendMessage(ctx, chatID, msg)
 
-	case "/limpar_lembretes", "/limpar_rotinas":
-		count, _ := s.db.CountAllRoutines(ctx)
-		if count == 0 {
-			_ = s.tg.SendMessage(ctx, chatID, "⏰ Nenhum lembrete ou rotina cadastrada no momento.")
-			return
+	case "/limpar_lembretes", "/limpar_automacoes":
+		kind := "lembrete"
+		if cmd == "/limpar_automacoes" {
+			kind = "automacao"
 		}
-		_ = s.db.SavePendingConfirmation(ctx, chatID, "limpar_lembretes", 0, "")
-		msg := fmt.Sprintf("⚠️ *Atenção:* Você tem certeza de que deseja *apagar todos os %d lembretes e rotinas diárias*?\n\nEsta ação é permanente e irreversível.\n\n👉 Responda com *Sim* para confirmar ou *Não* para cancelar.", count)
-		_ = s.tg.SendMessage(ctx, chatID, msg)
+		_ = s.tg.SendMessage(ctx, chatID, s.requestClearScheduled(ctx, chatID, kind))
+	case "/limpar_rotinas":
+		_ = s.tg.SendMessage(ctx, chatID, "Escolha /limpar_lembretes ou /limpar_automacoes. Nenhuma categoria foi alterada.")
 
-	case "/limpar_tudo", "/delete_tudo":
+	case "/limpar_tudo", "/delete_tudo", "/limpar_agenda_envios":
 		countEv, _ := s.db.CountAllEventos(ctx)
 		countRt, _ := s.db.CountAllRoutines(ctx)
 		if countEv == 0 && countRt == 0 {
@@ -1635,7 +1611,7 @@ func (s *Server) handleCommand(ctx context.Context, chatID int64, cmdText string
 			return
 		}
 		_ = s.db.SavePendingConfirmation(ctx, chatID, "limpar_tudo", 0, "")
-		msg := fmt.Sprintf("⚠️ *Atenção:* Você tem certeza de que deseja *apagar TUDO* (%d compromisso(s) e %d lembrete(s))?\n\nEsta ação é permanente e irreversível.\n\n👉 Responda com *Sim* para confirmar ou *Não* para cancelar.", countEv, countRt)
+		msg := fmt.Sprintf("Excluir a agenda (%d compromissos) e os envios programados (%d lembretes/automações)? Tarefas, planos, memória e finanças ficam preservados. Responda Sim ou Não.", countEv, countRt)
 		_ = s.tg.SendMessage(ctx, chatID, msg)
 
 	case "/sonar", "$":
@@ -1645,23 +1621,9 @@ func (s *Server) handleCommand(ctx context.Context, chatID int64, cmdText string
 			return
 		}
 
-		res, err := s.sonarClient.Execute(ctx, cmdStr, "")
-		if err != nil {
-			_ = s.tg.SendMessage(ctx, chatID, fmt.Sprintf("⚠️ *Falha na execução Sonar:*\n`%v`", err))
-			return
-		}
-
-		header := fmt.Sprintf("🛰️ *SONAR CLI* (`$ %s` • Zero Tokens)\n", cmdStr)
-		cleanOut := strings.TrimSpace(res.Output)
-		if cleanOut == "" {
-			_ = s.tg.SendMessage(ctx, chatID, fmt.Sprintf("%s✅ Executado com sucesso (sem retorno de texto).", header))
-			return
-		}
-
-		if len(cleanOut) > 3500 {
-			cleanOut = cleanOut[:3450] + "\n... [saída truncada]"
-		}
-		_ = s.tg.SendMessage(ctx, chatID, fmt.Sprintf("%s```text\n%s\n```", header, cleanOut))
+		text := s.executeAppAction(ctx, &nlu.IntentResult{Acao: "executar_terminal", Termo: cmdStr})
+		_ = s.tg.SendMessage(ctx, chatID, text)
+		_ = s.db.RecordHistory(ctx, "assistant", text)
 
 	case "/py", "/python":
 		_ = s.tg.SendChatAction(ctx, chatID, "typing")
@@ -1786,94 +1748,12 @@ func (s *Server) handleCommand(ctx context.Context, chatID int64, cmdText string
 		_ = s.db.RecordHistory(ctx, "assistant", curated)
 
 	case "/rotina":
-		if len(parts) >= 3 && strings.ToLower(parts[2]) == "toggle" {
-			id, err := strconv.ParseInt(parts[1], 10, 64)
-			if err != nil {
-				_ = s.tg.SendMessage(ctx, chatID, "ID inválido.")
-				return
-			}
-			active, err := s.db.ToggleRoutine(ctx, id)
-			if err != nil {
-				_ = s.tg.SendMessage(ctx, chatID, "Erro ao atualizar rotina.")
-				return
-			}
-			statusStr := "desativada 🔴"
-			if active {
-				statusStr = "ativada 🟢"
-			}
-			_ = s.tg.SendMessage(ctx, chatID, fmt.Sprintf("Rotina [%d] %s.", id, statusStr))
-			return
-		}
+		_ = s.tg.SendMessage(ctx, chatID, "Rotina é uma visão do dia: /dia. Para alterar um envio, use /lembrete <ID> horario HH:MM ou /automacao <ID> horario HH:MM. Nenhum cadastro foi alterado.")
 
-		if len(parts) >= 4 && strings.ToLower(parts[2]) == "horario" {
-			id, err := strconv.ParseInt(parts[1], 10, 64)
-			if err != nil {
-				_ = s.tg.SendMessage(ctx, chatID, "ID inválido.")
-				return
-			}
-			newTime := parts[3]
-			if _, err := time.Parse("15:04", newTime); err != nil {
-				_ = s.tg.SendMessage(ctx, chatID, "Formato de hora inválido. Use HH:MM (ex: 08:30).")
-				return
-			}
-			if err := s.db.UpdateRoutineTime(ctx, id, newTime); err != nil {
-				_ = s.tg.SendMessage(ctx, chatID, "Erro ao alterar horário.")
-				return
-			}
-			_ = s.tg.SendMessage(ctx, chatID, fmt.Sprintf("Horário da rotina [%d] atualizado para *%s* ⏰.", id, newTime))
-			return
-		}
-
-		_ = s.tg.SendMessage(ctx, chatID, "Uso: `/rotina <id> horario HH:MM` ou `/rotina <id> toggle`")
-
-	case "/hoje", "/agenda":
-		now := time.Now().In(s.cfg.Location)
-		todayStr := now.Format("2006-01-02")
-		events, err := s.db.GetEventsForDay(ctx, todayStr)
-		if err != nil || len(events) == 0 {
-			_ = s.tg.SendMessage(ctx, chatID, fmt.Sprintf("📅 Não há compromissos agendados para hoje (%s).", todayStr))
-			return
-		}
-
-		var sb strings.Builder
-		sb.WriteString(fmt.Sprintf("📅 *Agenda de Hoje (%s):*\n\n", todayStr))
-		for _, ev := range events {
-			badge := ""
-			switch ev.Frequencia {
-			case "diario":
-				badge = " 🔄 _(Diário)_"
-			case "semanal":
-				badge = " 🔁 _(Semanal)_"
-			case "mensal":
-				badge = " 🗓️ _(Mensal)_"
-			}
-
-			b1 := ev.HorarioBuffer1
-			b2 := ev.HorarioBuffer2
-			if (b1 == "" || b2 == "") && ev.HorarioTime != "" {
-				parts := strings.Split(ev.HorarioTime, ":")
-				if len(parts) >= 2 {
-					hh, _ := strconv.Atoi(parts[0])
-					mm, _ := strconv.Atoi(parts[1])
-					oficial := time.Date(now.Year(), now.Month(), now.Day(), hh, mm, 0, 0, s.cfg.Location)
-					desloc := ev.DeslocamentoMin
-					if desloc < 0 {
-						desloc = 25
-					}
-					prep := ev.PreparoMin
-					if prep < 0 {
-						prep = 35
-					}
-					calc := calculator.Calculate(oficial, desloc, prep, calculator.DefaultDelayMargin)
-					b1 = calc.BufferPrep.Format("15:04")
-					b2 = calc.BufferLeave.Format("15:04")
-				}
-			}
-
-			sb.WriteString(fmt.Sprintf("📌 *%s*%s\n  ⏰ Oficial: %s\n  🛁 Preparo: %s\n  🚗 Saída: %s\n\n",
-				ev.Descricao, badge, ev.HorarioOficial, b1, b2))
-		}
-		_ = s.tg.SendMessage(ctx, chatID, sb.String())
+	case "/hoje":
+		text := s.agendaView(ctx, s.today())
+		_ = s.tg.SendMessage(ctx, chatID, text)
+		_ = s.db.RecordHistory(ctx, "assistant", text)
 
 	case "/metas":
 		goals, err := s.db.GetActiveGoals(ctx, 10)
@@ -1977,7 +1857,7 @@ func (s *Server) handleCommand(ctx context.Context, chatID int64, cmdText string
 			"⚙️ *Limites de Segurança:*\n"+
 			"• Teto Resposta Rápida: *%d* tokens\n"+
 			"• Teto Análise Pesada: *%d* tokens\n"+
-			"• Teto Modo Pesquisa: *%d* tokens (Desbloqueado)\n"+
+			"• Orçamento configurado de pesquisa: *%d* tokens (sujeito ao limite do provedor)\n"+
 			"• Janela de Histórico: últimas *%d* mensagens",
 			stats.TotalHoje, stats.TotalMes, stats.TotalGroq, stats.TotalNv,
 			s.cfg.MaxTokensQuick, s.cfg.MaxTokensHeavy, s.cfg.MaxTokensResearch, s.cfg.HistoryLimit)
@@ -1985,7 +1865,7 @@ func (s *Server) handleCommand(ctx context.Context, chatID int64, cmdText string
 
 	case "/backup":
 		if s.cfg.TursoDatabaseURL != "" {
-			_ = s.tg.SendMessage(ctx, chatID, "🛡️ O banco de dados está operando no Turso Cloud com replicação e backups automáticos.")
+			_ = s.tg.SendMessage(ctx, chatID, "O banco está no Turso. Este comando não exporta arquivo local; a configuração de snapshots e backups deve ser consultada no provedor.")
 			return
 		}
 		caption := fmt.Sprintf("🛡️ Backup manual solicitado em %s", time.Now().In(s.cfg.Location).Format("2006-01-02 15:04:05"))
@@ -2005,7 +1885,7 @@ func (s *Server) handleCalendarICS(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	events, err := s.db.GetUpcomingEvents(r.Context(), 50)
+	events, err := s.db.ActiveEvents(r.Context())
 	if err != nil {
 		http.Error(w, "Internal Server Error", http.StatusInternalServerError)
 		return
@@ -2218,6 +2098,12 @@ func matchFastPath(text string) (string, bool) {
 	if strings.HasPrefix(clean, "conselho ") {
 		return "/swarm " + strings.TrimSpace(text[len("conselho "):]), true
 	}
+	if command, ok := capabilityFastPath(text); ok {
+		return command, true
+	}
+	if unsupportedEmailOperation(text) {
+		return "/capacidades emails", true
+	}
 	if command, ok := planningFastPath(text); ok {
 		return command, true
 	}
@@ -2229,6 +2115,20 @@ func matchFastPath(text string) (string, bool) {
 	}
 	if command, ok := checklistFastPath(text); ok {
 		return command, true
+	}
+	if synonyms.MatchCanonical(tokensForOperation, "salario") || synonyms.MatchCanonical(tokensForOperation, "simular") || strings.Contains(clean, "posso comprar") || strings.Contains(clean, "posso adquirir") {
+		return "", false
+	}
+	if !automationOperation(clean) {
+		if synonyms.MatchCanonical(tokensForOperation, "visao_dia") && (len(tokensForOperation) <= 4 || synonyms.MatchCanonical(tokensForOperation, "ver")) {
+			return "/dia", true
+		}
+		if synonyms.MatchCanonical(tokensForOperation, "automacao") && (len(tokensForOperation) <= 4 || synonyms.MatchCanonical(tokensForOperation, "ver")) {
+			return "/automacoes", true
+		}
+		if synonyms.MatchCanonical(tokensForOperation, "lembrete") && (len(tokensForOperation) <= 4 || synonyms.MatchCanonical(tokensForOperation, "ver")) {
+			return "/lembretes", true
+		}
 	}
 	if automationOperation(clean) && (!bulkCleanup && !deleteBill || synonyms.MatchCanonical(tokensForOperation, "nao")) {
 		return "", false
@@ -2389,9 +2289,9 @@ func matchFastPath(text string) (string, bool) {
 		}
 	}
 	// Consulta direta de agenda / compromissos sem especificar outra coisa: "agenda", "minha agenda", "compromissos", "ver agenda", "listar tarefas"
-	if synonyms.MatchCanonical(tokens, "agenda") && (len(tokens) <= 3 || synonyms.MatchCanonical(tokens, "ver")) {
+	if synonyms.MatchCanonical(tokens, "agenda") && (len(tokens) <= 3 || synonyms.MatchCanonical(tokens, "ver") || synonyms.MatchCanonical(tokens, "todo")) {
 		if !strings.Contains(clean, "marcar") && !strings.Contains(clean, "agendar") && !strings.Contains(clean, "adicionar") && !strings.Contains(clean, "nova") {
-			return "/hoje", true
+			return "/agenda", true
 		}
 	}
 

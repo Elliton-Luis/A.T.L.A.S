@@ -38,6 +38,7 @@ type Evento struct {
 	UltimaNotificacaoB1 *string // "YYYY-MM-DD"
 	UltimaNotificacaoB2 *string // "YYYY-MM-DD"
 	UltimaConclusaoData *string // "YYYY-MM-DD"
+	DuracaoMin          *int
 }
 
 type Objetivo struct {
@@ -200,6 +201,7 @@ func (db *DB) migrate(ctx context.Context, isRemote bool) error {
 		ultima_notificacao_b1 TEXT,
 		ultima_notificacao_b2 TEXT,
 		ultima_conclusao_data TEXT
+		,duracao_min INTEGER
 	);
 
 	CREATE TABLE IF NOT EXISTS objetivos (
@@ -360,6 +362,39 @@ func (db *DB) migrate(ctx context.Context, isRemote bool) error {
 	_, _ = db.ExecContext(ctx, "ALTER TABLE eventos ADD COLUMN ultima_notificacao_b1 TEXT;")
 	_, _ = db.ExecContext(ctx, "ALTER TABLE eventos ADD COLUMN ultima_notificacao_b2 TEXT;")
 	_, _ = db.ExecContext(ctx, "ALTER TABLE eventos ADD COLUMN ultima_conclusao_data TEXT;")
+	// Existing schedules keep an unknown duration; never backfill a guessed hour.
+	columns, err := db.QueryContext(ctx, "PRAGMA table_info(eventos)")
+	if err != nil {
+		return err
+	}
+	hasDuration := false
+	for columns.Next() {
+		var cid, notnull, pk int
+		var name, typ string
+		var value interface{}
+		if err := columns.Scan(&cid, &name, &typ, &notnull, &value, &pk); err != nil {
+			columns.Close()
+			return err
+		}
+		if name == "duracao_min" {
+			hasDuration = true
+		}
+	}
+	err = columns.Err()
+	columns.Close()
+	if err != nil {
+		return err
+	}
+	if !hasDuration {
+		if _, err := db.ExecContext(ctx, "ALTER TABLE eventos ADD COLUMN duracao_min INTEGER"); err != nil {
+			// Another cold-start may have added the column after our inspection.
+			check, checkErr := db.QueryContext(ctx, "SELECT duracao_min FROM eventos LIMIT 0")
+			if checkErr != nil {
+				return err
+			}
+			check.Close()
+		}
+	}
 
 	// Seed default routines if table is empty
 	var count int
@@ -429,27 +464,25 @@ func (db *DB) GetRecentHistory(ctx context.Context, limit int) ([]ChatMessage, e
 }
 
 // InsertEventoCompleto saves an event with full recurrence parameters.
-func (db *DB) InsertEventoCompleto(ctx context.Context, desc, officialTime, b1, b2, freq string, diaSemana, diaMes *int, horarioTime string, desloc, prep int) (int64, error) {
+func (db *DB) InsertEventoCompleto(ctx context.Context, desc, officialTime, b1, b2, freq string, diaSemana, diaMes *int, horarioTime string, desloc, prep int, duration ...*int) (int64, error) {
 	if freq == "" {
 		freq = "pontual"
 	}
-	if desloc <= 0 {
+	if desloc < 0 {
 		desloc = 25
 	}
-	if prep <= 0 {
+	if prep < 0 {
 		prep = 35
 	}
-	res, err := db.ExecContext(ctx, `
-		INSERT INTO eventos (
-			descricao, horario_oficial, horario_buffer_1, horario_buffer_2,
-			frequencia, dia_semana, dia_mes, horario_time, deslocamento_min, preparo_min
-		)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-	`, desc, officialTime, b1, b2, freq, diaSemana, diaMes, horarioTime, desloc, prep)
+	var durationMin *int
+	if len(duration) > 0 {
+		durationMin = duration[0]
+	}
+	ids, err := db.InsertEventSet(ctx, []Evento{{Descricao: desc, HorarioOficial: officialTime, HorarioBuffer1: b1, HorarioBuffer2: b2, Frequencia: freq, DiaSemana: diaSemana, DiaMes: diaMes, HorarioTime: horarioTime, DeslocamentoMin: desloc, PreparoMin: prep, DuracaoMin: durationMin}})
 	if err != nil {
 		return 0, err
 	}
-	return res.LastInsertId()
+	return ids[0], nil
 }
 
 // InsertEvento saves an event with its calculated buffers (pontual backward compatible).
@@ -729,16 +762,51 @@ const selectEventoCols = `id, descricao, horario_oficial, COALESCE(horario_buffe
        notificado_buffer_1, notificado_buffer_2, notificado_conclusao, status, criado_em,
        COALESCE(frequencia, 'pontual'), dia_semana, dia_mes, COALESCE(horario_time, ''),
        COALESCE(deslocamento_min, 25), COALESCE(preparo_min, 35),
-       ultima_notificacao_b1, ultima_notificacao_b2, ultima_conclusao_data`
+       ultima_notificacao_b1, ultima_notificacao_b2, ultima_conclusao_data, duracao_min`
 
 func scanEvento(rows *sql.Rows, e *Evento) error {
-	return rows.Scan(
+	err := rows.Scan(
 		&e.ID, &e.Descricao, &e.HorarioOficial, &e.HorarioBuffer1, &e.HorarioBuffer2,
 		&e.NotificadoBuffer1, &e.NotificadoBuffer2, &e.NotificadoConclusao, &e.Status, &e.CriadoEm,
 		&e.Frequencia, &e.DiaSemana, &e.DiaMes, &e.HorarioTime,
 		&e.DeslocamentoMin, &e.PreparoMin,
 		&e.UltimaNotificacaoB1, &e.UltimaNotificacaoB2, &e.UltimaConclusaoData,
+		&e.DuracaoMin,
 	)
+	if err == nil {
+		normalizeLegacyZeroBuffers(e)
+	}
+	return err
+}
+
+// Older inserts replaced explicit zero with 25/35 after buffers were calculated.
+// A zero buffer offset cannot be produced by those positive defaults.
+func normalizeLegacyZeroBuffers(event *Evento) {
+	if event.HorarioTime == "" && len(event.HorarioOficial) >= 16 {
+		event.HorarioTime = event.HorarioOficial[11:16]
+	}
+	clock := event.HorarioTime
+	if clock == "" {
+		clock = event.HorarioOficial
+	}
+	equal := func(a, b string) bool {
+		if len(a) >= 16 && len(b) >= 16 {
+			return strings.ReplaceAll(a[:16], "T", " ") == strings.ReplaceAll(b[:16], "T", " ")
+		}
+		if len(a) >= 16 {
+			a = a[11:16]
+		}
+		if len(b) >= 16 {
+			b = b[11:16]
+		}
+		return a != "" && a == b
+	}
+	if event.DeslocamentoMin == 25 && equal(event.HorarioBuffer2, clock) {
+		event.DeslocamentoMin = 0
+	}
+	if event.PreparoMin == 35 && equal(event.HorarioBuffer1, event.HorarioBuffer2) {
+		event.PreparoMin = 0
+	}
 }
 
 // GetActiveRecurringEvents returns all active recurring events (diario, semanal, mensal).
@@ -1069,7 +1137,8 @@ func (db *DB) GetPendingCompletionEvents(ctx context.Context, thresholdStr strin
 		SELECT %s
 		FROM eventos
 		WHERE notificado_conclusao = 0
-		  AND horario_oficial <= ?
+		  AND duracao_min IS NOT NULL AND duracao_min > 0
+		  AND datetime(horario_oficial, '+' || duracao_min || ' minutes') <= datetime(?)
 		  AND status = 'pendente'
 		  AND (frequencia IS NULL OR frequencia = 'pontual')
 		LIMIT 5
@@ -1232,10 +1301,11 @@ func (db *DB) GetEventoByID(ctx context.Context, id int64) (*Evento, error) {
 		&e.NotificadoBuffer1, &e.NotificadoBuffer2, &e.NotificadoConclusao, &e.Status, &e.CriadoEm,
 		&e.Frequencia, &e.DiaSemana, &e.DiaMes, &e.HorarioTime,
 		&e.DeslocamentoMin, &e.PreparoMin,
-		&e.UltimaNotificacaoB1, &e.UltimaNotificacaoB2, &e.UltimaConclusaoData,
+		&e.UltimaNotificacaoB1, &e.UltimaNotificacaoB2, &e.UltimaConclusaoData, &e.DuracaoMin,
 	); err != nil {
 		return nil, err
 	}
+	normalizeLegacyZeroBuffers(&e)
 	return &e, nil
 }
 
@@ -1255,10 +1325,11 @@ func (db *DB) GetLatestPendingEvento(ctx context.Context) (*Evento, error) {
 		&e.NotificadoBuffer1, &e.NotificadoBuffer2, &e.NotificadoConclusao, &e.Status, &e.CriadoEm,
 		&e.Frequencia, &e.DiaSemana, &e.DiaMes, &e.HorarioTime,
 		&e.DeslocamentoMin, &e.PreparoMin,
-		&e.UltimaNotificacaoB1, &e.UltimaNotificacaoB2, &e.UltimaConclusaoData,
+		&e.UltimaNotificacaoB1, &e.UltimaNotificacaoB2, &e.UltimaConclusaoData, &e.DuracaoMin,
 	); err != nil {
 		return nil, err
 	}
+	normalizeLegacyZeroBuffers(&e)
 	return &e, nil
 }
 

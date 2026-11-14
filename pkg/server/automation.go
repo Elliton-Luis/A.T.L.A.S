@@ -140,6 +140,9 @@ func (s *Server) handleAutomation(ctx context.Context, text string) (string, boo
 		}
 		var matches []database.RotinaProativa
 		for _, r := range routines {
+			if scheduler.RoutineKind(r) != "automacao" {
+				continue
+			}
 			ra, rt := routineAction(r.Nome)
 			if r.Tipo == "briefing" {
 				ra = "briefing"
@@ -255,7 +258,9 @@ func (s *Server) executeScheduledAction(ctx context.Context, action scheduler.Ac
 		return catholic.FetchPassage(ctx, action.Term)
 	case "ler_emails":
 		return s.readEmails(ctx, action.Term)
-	case "noticias", "listar_agenda", "listar_lembretes", "listar_contas", "listar_tarefas":
+	case "listar_agenda":
+		return s.agendaView(ctx, s.today()), nil
+	case "noticias", "listar_lembretes", "listar_contas", "listar_tarefas":
 		result := s.executeAppAction(ctx, &nlu.IntentResult{Acao: action.Action, Termo: action.Term})
 		if strings.HasPrefix(result, "⚠️") {
 			return "", fmt.Errorf("%s", result)

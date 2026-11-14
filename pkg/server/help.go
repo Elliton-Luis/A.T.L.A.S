@@ -8,7 +8,7 @@ import (
 
 const helpIndex = `*ATLAS — Setores*
 1. Organização do dia /organizar
-2. Briefing e rotinas /proatividade
+2. Briefing e envios /proatividade
 3. E-mails /correio
 4. Fé e oração /fe
 5. Ideias e pesquisa /conhecimento
@@ -20,29 +20,42 @@ func sectorHelp(sector string) string {
 	sector = strings.TrimPrefix(synonyms.RemoveAccents(strings.ToLower(strings.TrimSpace(sector))), "/")
 	menus := map[string]string{
 		"organizar": `*Organização do dia*
+/dia — visão geral, sem criar outro cadastro
+*Compromissos: possuem horário e duração*
+/agenda — todas as atividades, agrupadas por dia/horário
+/compromisso <ID> horario HH:MM — alterar somente uma linha
+/hoje — compromissos de hoje
+/calendario — visualização mensal da mesma agenda
+*Tarefas: não possuem horário fixo*
 /planejar <atividade> por 30 min — passos práticos e gratuitos
 /tarefas — checklist de hoje
 /tarefa <texto; outro texto> — anotar tarefas
 /feito <nome ou ID> — marcar conclusão
 /tarefas ontem — histórico
-/hoje — agenda, preparo e saída
-/mes — calendário e sincronização iCal
 /metas — objetivos de longo prazo
 /pdf rotina — exportar calendário em PDF
 
 Também pode dizer: "Meu plano é estudar inglês por meia hora."
 /help — setores`,
-		"proatividade": `*Briefing e rotinas*
+		"proatividade": `*Avisos e envios programados*
+*Lembretes: mensagens fixas*
+/lembretes — listar só lembretes
+/lembrete criar 09:00 beber água — criar mensagem fixa
+/lembrete <ID> horario HH:MM — mudar horário
+/lembrete <ID> pausar ou ativar — controlar envio
+/lembrete <ID> excluir — excluir só esse lembrete
+*Automações: executam ferramentas e enviam resultados*
+/automacoes — listar só automações
+/automacao <ID> horario HH:MM — mudar horário
+/automacao <ID> pausar ou ativar — controlar execução
+/automacao <ID> excluir — excluir só essa automação
+*Briefing: composição diária de informações*
 /briefing — receber agora
 /briefing config — ver conteúdo escolhido
 /briefing configurar <itens> — definir composição
 /briefing adicionar <item> — acrescentar conteúdo
 /briefing remover <número> — retirar conteúdo
 /briefing horario 07:00 — definir envio diário
-/rotinas — ver programações
-/rotina <ID> horario HH:MM — mudar horário
-/rotina <ID> toggle — ativar ou desativar
-/apagar <ID> — remover programação
 /review — fechamento do dia
 /help — setores`,
 		"emails": `*E-mails — somente leitura*
@@ -77,6 +90,8 @@ Diga "anote uma ideia" ou "pesquise sobre <tema>".
 /crawl <URL> — rastrear páginas
 /help — setores`,
 		"financas": `*Finanças*
+/salario <valor> — guardar salário mensal
+/simular_compra <custo> [gastos] [dívidas] — índice de 1 a 20
 /contas — contas, faturas e assinaturas
 /conta <nome> dia <dia> [valor] — cadastrar vencimento
 /pagar <nome> — registrar pagamento
@@ -87,6 +102,7 @@ Diga "anote uma ideia" ou "pesquise sobre <tema>".
 /tokens — consumo de IA
 /backup — cópia do banco local
 /hud — painel visual
+/capacidades — funções, disponibilidade e limites
 Diga "lembre-se que..." para registrar uma informação.
 /help — setores`,
 	}
@@ -122,8 +138,8 @@ func helpFastPath(text string) (string, bool) {
 	}{
 		{"/ferramentas", []string{"linux", "terminal", "python", "ferramentas"}},
 		{"/correio", []string{"email", "e-mail", "correio", "inbox"}},
-		{"/proatividade", []string{"briefing", "rotina", "lembrete"}},
-		{"/organizar", []string{"planejar", "planejamento", "tarefas", "agenda", "metas", "pdf"}},
+		{"/proatividade", []string{"briefing", "lembrete", "automacao", "envios"}},
+		{"/organizar", []string{"rotina", "planejar", "planejamento", "tarefas", "agenda", "metas", "pdf"}},
 		{"/fe", []string{"liturgia", "santo", "biblia", "oracao", "religiao"}},
 		{"/conhecimento", []string{"pesquisa", "ideias", "noticias"}},
 		{"/financas", []string{"contas", "financas", "pagamento", "fatura"}},

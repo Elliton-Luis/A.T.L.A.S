@@ -33,7 +33,7 @@ func TestPDFExportsActualTimesAndUnscheduledTasks(t *testing.T) {
 	}
 	found := false
 	for _, row := range document.Sections[0].Rows {
-		if row.Activity == "Consulta dentista" {
+		if strings.HasPrefix(row.Activity, "Consulta dentista") {
 			found = true
 			if row.Time != "10:00" || row.Prep != "08:50" || row.Leave != "09:31" {
 				t.Fatal("horários incorretos", row)
@@ -107,5 +107,29 @@ func TestPDFPeriodsAndExplicitSections(t *testing.T) {
 	}
 	if command, ok := matchFastPath("analise este arquivo.pdf"); ok && strings.HasPrefix(command, "/pdf ") {
 		t.Fatal("leitura de PDF virou exportação")
+	}
+}
+
+func TestPDFLabelsScheduledKindsAndRespectsLiteralWeekdays(t *testing.T) {
+	s := automationServer(t)
+	ctx := context.Background()
+	s.createReminder(ctx, &nlu.IntentResult{Mensagem: "Leitura semanal", Horario: "09:00", Frequencia: "semanal", DiasSemana: []int{1}})
+	document, err := s.pdfDocument(ctx, &nlu.IntentResult{Secoes: []string{"rotinas"}, Data: "2026-11-14", Periodo: "semana"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	count := 0
+	for _, section := range document.Sections {
+		for _, row := range section.Rows {
+			if row.Activity == "Lembrete: Leitura semanal" {
+				count++
+				if !strings.Contains(section.Title, "16/11/2026") {
+					t.Fatal("lembrete exportado no dia errado", section)
+				}
+			}
+		}
+	}
+	if count != 1 {
+		t.Fatal("lembrete semanal exportado como diário", count)
 	}
 }

@@ -9,8 +9,8 @@ import (
 	"sync"
 	"time"
 
-	"atlas/pkg/calculator"
 	"atlas/pkg/database"
+	"atlas/pkg/schedule"
 )
 
 // BuildBriefing composes configured sources, retaining their order and isolating failures.
@@ -106,10 +106,11 @@ func (e *Engine) BuildDefaultBriefing(ctx context.Context, date string) (string,
 	if err != nil {
 		return "", err
 	}
-	events, err := e.db.GetEventsForDay(ctx, date)
+	byDay, err := e.db.EventsForRange(ctx, date, 1, e.cfg.Location)
 	if err != nil {
 		return "", err
 	}
+	events := byDay[date]
 	goals, err := e.db.GetActiveGoals(ctx, 100)
 	if err != nil {
 		return "", err
@@ -123,30 +124,8 @@ func (e *Engine) BuildDefaultBriefing(ctx context.Context, date string) (string,
 		return "", err
 	}
 	var b strings.Builder
-	fmt.Fprintf(&b, "☀️ *ATLAS — Briefing Matinal*\n📅 %s\n\n*Agenda*\n", day.Format("02/01/2006"))
-	if len(events) == 0 {
-		b.WriteString("Nenhum compromisso registrado.\n")
-	}
-	for _, event := range events {
-		hour := event.HorarioTime
-		if hour == "" && len(event.HorarioOficial) >= 16 {
-			hour = event.HorarioOficial[11:16]
-		}
-		status := ""
-		if event.Status == "concluido" {
-			status = " (concluído)"
-		}
-		fmt.Fprintf(&b, "• %s — %s%s\n", hour, event.Descricao, status)
-		if official, err := time.ParseInLocation("2006-01-02 15:04:05", event.HorarioOficial, e.cfg.Location); err == nil && (event.PreparoMin > 0 || event.DeslocamentoMin > 0) {
-			buffers := calculator.Calculate(official, event.DeslocamentoMin, event.PreparoMin, calculator.DefaultDelayMargin)
-			if event.PreparoMin > 0 {
-				fmt.Fprintf(&b, "  Preparo: %s\n", buffers.BufferPrep.Format("15:04"))
-			}
-			if event.DeslocamentoMin > 0 {
-				fmt.Fprintf(&b, "  Saída: %s\n", buffers.BufferLeave.Format("15:04"))
-			}
-		}
-	}
+	fmt.Fprintf(&b, "☀️ *ATLAS — Briefing Matinal*\n📅 %s\n\n", day.Format("02/01/2006"))
+	b.WriteString(schedule.Format(events, "Agenda", e.cfg.Location))
 	tasks, err := e.db.DailyTasks(ctx, date)
 	if err != nil {
 		return "", err
@@ -165,13 +144,18 @@ func (e *Engine) BuildDefaultBriefing(ctx context.Context, date string) (string,
 			fmt.Fprintf(&b, "  %d min | %s | Resultado: %s\n", task.Minutes, task.Difficulty, task.Completion)
 		}
 	}
-	b.WriteString("\n*Rotinas de hoje*\n")
-	for _, routine := range routines {
-		action, _ := decodeAction(routine)
-		if routine.Tipo == "briefing" || action.Action == "briefing" || !routineMatchesDay(routine, day) {
-			continue
+	for _, kind := range []string{"lembrete", "automacao"} {
+		if kind == "lembrete" {
+			b.WriteString("\n*Lembretes de hoje — mensagens fixas*\n")
+		} else {
+			b.WriteString("\n*Automações de hoje — ações programadas*\n")
 		}
-		fmt.Fprintf(&b, "• %s — %s\n", routine.Horario, routine.Nome)
+		for _, routine := range routines {
+			if RoutineKind(routine) != kind || !routineMatchesDay(routine, day) {
+				continue
+			}
+			fmt.Fprintf(&b, "• %s — %s\n", routine.Horario, routine.Nome)
+		}
 	}
 	b.WriteString("\n*Metas ativas*\n")
 	if len(goals) == 0 {

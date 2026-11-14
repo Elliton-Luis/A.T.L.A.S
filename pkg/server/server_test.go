@@ -105,13 +105,13 @@ func TestEventConfirmationReplacement(t *testing.T) {
 	if !handled {
 		t.Fatalf("expected confirmation to be handled on 'Sim'")
 	}
-	if !strings.Contains(reply, "apagado com sucesso") {
-		t.Errorf("expected success deletion message, got: %s", reply)
+	if !strings.Contains(reply, "Atualização concluída") {
+		t.Errorf("expected in-place update, got: %s", reply)
 	}
 
-	// Verificar que evento anterior foi excluído
-	if _, err := srv.db.GetEventoByID(ctx, oldID); err == nil {
-		t.Errorf("expected old event %d to be deleted, but it still exists", oldID)
+	// Updating preserves the ID and does not delete the existing occurrence.
+	if updated, err := srv.db.GetEventoByID(ctx, oldID); err != nil || !strings.Contains(updated.HorarioOficial, "16:00") {
+		t.Errorf("expected event %d to keep its ID with updated time", oldID)
 	}
 
 	// Verificar que novo evento foi criado
@@ -201,7 +201,7 @@ func TestClearAllEventosWithConfirmation(t *testing.T) {
 	}
 }
 
-func TestClearAllRoutinesWithConfirmation(t *testing.T) {
+func TestClearOnlyLiteralRemindersWithConfirmation(t *testing.T) {
 	tmpDir, err := os.MkdirTemp("", "atlas_clear_routines_*")
 	if err != nil {
 		t.Fatalf("failed to create temp dir: %v", err)
@@ -219,6 +219,10 @@ func TestClearAllRoutinesWithConfirmation(t *testing.T) {
 	count, _ := db.CountAllRoutines(ctx)
 	if count == 0 {
 		t.Fatalf("expected seeded routines, got 0")
+	}
+	message := "Tomar água"
+	if _, err := db.InsertRoutine(ctx, "Tomar água", "09:00", "custom", &message); err != nil {
+		t.Fatal(err)
 	}
 
 	srv := &Server{
@@ -247,13 +251,13 @@ func TestClearAllRoutinesWithConfirmation(t *testing.T) {
 	_ = srv.db.SavePendingConfirmation(ctx, chatID, "limpar_lembretes", 0, "")
 	pending2, _ := srv.db.GetPendingConfirmation(ctx, chatID)
 	handledYes, replyYes := srv.handlePendingConfirmation(ctx, chatID, "Sim", pending2)
-	if !handledYes || !strings.Contains(replyYes, "removidos com sucesso") {
+	if !handledYes || !strings.Contains(replyYes, "1 item(ns) de lembrete") {
 		t.Errorf("expected success message, got: %s", replyYes)
 	}
 
 	countAfterYes, _ := db.CountAllRoutines(ctx)
-	if countAfterYes != 0 {
-		t.Fatalf("expected 0 routines after 'Sim', got %d", countAfterYes)
+	if countAfterYes != count {
+		t.Fatalf("expected automations preserved (%d), got %d", count, countAfterYes)
 	}
 }
 
@@ -332,7 +336,7 @@ func TestMatchFastPathPriorities(t *testing.T) {
 		{"o que tenho hoje", "/hoje", true},
 		{"agenda de hoje", "/hoje", true},
 		{"hoje", "/hoje", true},
-		{"minha agenda", "/hoje", true},
+		{"minha agenda", "/agenda", true},
 		{"limpar agenda", "/limpar_agenda", true},
 		{"apagar todos os compromissos", "/limpar_agenda", true},
 		{"deletar agenda", "/limpar_agenda", true},
@@ -345,7 +349,7 @@ func TestMatchFastPathPriorities(t *testing.T) {
 		{"apagar tudo", "/limpar_tudo", true},
 		{"limpar lembretes", "/limpar_lembretes", true},
 		{"apagar todos os lembretes", "/limpar_lembretes", true},
-		{"deletar rotinas", "/limpar_lembretes", true},
+		{"deletar rotinas", "", false},
 		{"excluir todos os avisos", "/limpar_lembretes", true},
 		{"zerar alarmes", "/limpar_lembretes", true},
 		{"exibir metas", "/metas", true},
@@ -353,7 +357,7 @@ func TestMatchFastPathPriorities(t *testing.T) {
 		{"consultar alvos", "/metas", true},
 		{"mostrar projetos", "/ideias", true},
 		{"listar ideias", "/ideias", true},
-		{"listar rotinas", "/lembretes", true},
+		{"listar rotinas", "/dia", true},
 		{"exibir avisos", "/lembretes", true},
 		{"ver mes", "/mes", true},
 		{"grade mensal", "/mes", true},

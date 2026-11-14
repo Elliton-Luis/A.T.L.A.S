@@ -51,6 +51,26 @@ Assistente de organização pessoal operado via Telegram (voz e texto). Seu núc
 - A exportação PDF usa dados reais da agenda, das rotinas e do checklist, com períodos diário, semanal ou mensal.
 - Atividades sem horário permanecem identificadas como não agendadas. Uma duração estimada nunca se transforma automaticamente em um horário de calendário.
 
+### 4.6. Agenda consistente e duração real
+- Novos compromissos exigem duração informada pelo usuário. Faixas usam o limite superior; horários de início não são interpretados como duração.
+- Compromissos recorrentes são agrupados pelo nome, mantendo uma linha/ID por dia e horário. A edição é parcial, sem apagar e recriar o grupo.
+- Alterações em lote são transacionais. Ambiguidade de alvo, horário inválido ou duplicata no destino não deixam atualizações parciais.
+- Preparo/deslocamento zero são preservados. Duração desconhecida em registros antigos não é preenchida com um valor fictício.
+- Término, iCal, PDF e acompanhamento usam a duração registrada, inclusive ao atravessar a meia-noite.
+
+### 4.7. Separação de conceitos e capacidades
+- Calendário é uma visualização da agenda; rotina/dia é uma visão geral, não outro cadastro.
+- Tarefas e planos não são compromissos. Lembretes enviam texto fixo; automações executam ferramentas e enviam resultados.
+- Comandos específicos validam a categoria do ID. Não há exclusão de outra categoria como alternativa quando um alvo não é encontrado.
+- O catálogo de capacidades é compartilhado pelo bot e pelos prompts. Diferencia implementação, configuração e disponibilidade não verificada sem expor credenciais.
+- Áudios são transcritos e a transcrição é entregue antes da interpretação ou execução de comandos.
+
+### 4.8. Simulação de compra
+- O salário mensal pode ser salvo no perfil. Gastos e dívidas são entradas da simulação e não são automaticamente reutilizados como despesas futuras.
+- O cálculo usa centavos inteiros e saldo = salário - gastos - dívidas informados.
+- O índice tem 20 níveis: divisão inteira de 2 × saldo pelo custo do item, limitada a 1–20. A reserva mínima é 2× o custo; 10× ou mais atinge o nível 20.
+- A simulação apresenta entradas, saldo e índice. Não realiza compra, financiamento ou pagamento.
+
 ---
 
 ## 5. Esquema de Banco de Dados (SQLite)

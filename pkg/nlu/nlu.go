@@ -11,8 +11,10 @@ import (
 	"strings"
 	"time"
 
+	"atlas/pkg/capabilities"
 	"atlas/pkg/database"
 	"atlas/pkg/pool"
+	"atlas/pkg/schedule"
 )
 
 type Client struct {
@@ -24,45 +26,64 @@ type Client struct {
 	maxTokensHeavy    int
 	maxTokensResearch int
 	httpClient        *http.Client
+	capabilitySource  func() capabilities.Runtime
+}
+
+// SetCapabilitySource is wired once at server construction; no secrets enter prompts.
+func (c *Client) SetCapabilitySource(source func() capabilities.Runtime) { c.capabilitySource = source }
+func (c *Client) HasProvider() bool                                      { return !c.groqPool.IsEmpty() || !c.nvidiaPool.IsEmpty() }
+func (c *Client) capabilityPrompt() string {
+	runtime := capabilities.Runtime{AI: c.HasProvider(), Voice: !c.groqPool.IsEmpty()}
+	if c.capabilitySource != nil {
+		runtime = c.capabilitySource()
+	}
+	return capabilities.Prompt(runtime)
 }
 
 type IntentResult struct {
-	Secoes                    []string     `json:"secoes,omitempty"`
-	Periodo                   string       `json:"periodo,omitempty"`
-	DuracaoMin                int          `json:"duracao_min,omitempty"`
-	Tarefas                   []string     `json:"tarefas,omitempty"`
-	Data                      string       `json:"data,omitempty"`
-	Acoes                     []ActionStep `json:"acoes,omitempty"`
-	Tipo                      string       `json:"tipo"`           // acao, evento, ideia, adicionar_ideia, lembrar_fato, esquecer_fato, objetivo, lembrete_diario, conversa
-	Acao                      string       `json:"acao,omitempty"` // apagar_rotina, alterar_rotina, toggle_rotina, concluir_evento, apagar_evento, atualizar_meta, fazer_backup, listar_agenda, listar_lembretes
-	ID                        int64        `json:"id,omitempty"`
-	Termo                     string       `json:"termo,omitempty"`
-	Progresso                 int          `json:"progresso,omitempty"`
-	Complexidade              string       `json:"complexidade,omitempty"` // "simples" ou "pesada"
-	Titulo                    string       `json:"titulo,omitempty"`
-	Conteudo                  string       `json:"conteudo,omitempty"`
-	SumaIdeia                 string       `json:"suma_ideia,omitempty"`
-	PerguntaSocratica         string       `json:"pergunta_socratica,omitempty"`
-	ChaveMemoria              string       `json:"chave_memoria,omitempty"`
-	ValorMemoria              string       `json:"valor_memoria,omitempty"`
-	Descricao                 string       `json:"descricao,omitempty"`
-	Frequencia                string       `json:"frequencia,omitempty"`  // "pontual", "diario", "semanal", "mensal"
-	DiaSemana                 *int         `json:"dia_semana,omitempty"`  // 0=Domingo, 1=Segunda, ..., 6=Sábado
-	DiasSemana                []int        `json:"dias_semana,omitempty"` // Múltiplos dias da semana (0=Dom a 6=Sáb) para semanas com exceções
-	DiaMes                    *int         `json:"dia_mes,omitempty"`     // 1 a 31
-	HorarioOficial            string       `json:"horario_oficial,omitempty"`
-	EstimativaDeslocamentoMin *int         `json:"estimativa_deslocamento_min,omitempty"`
-	EstimativaPreparoMin      *int         `json:"estimativa_preparo_min,omitempty"`
-	Prazo                     string       `json:"prazo,omitempty"`
-	Resposta                  string       `json:"resposta,omitempty"`
-	Horario                   string       `json:"horario,omitempty"`
-	Nome                      string       `json:"nome,omitempty"`
-	Mensagem                  string       `json:"mensagem,omitempty"`
-	URL                       string       `json:"url,omitempty"`
-	SubstituirEventoID        int64        `json:"substituir_evento_id,omitempty"`
-	DiaVencimento             int          `json:"dia_vencimento,omitempty"`
-	Valor                     float64      `json:"valor,omitempty"`
-	Categoria                 string       `json:"categoria,omitempty"`
+	Salario                   *float64             `json:"salario,omitempty"`
+	Gastos                    *float64             `json:"gastos,omitempty"`
+	Dividas                   *float64             `json:"dividas,omitempty"`
+	CustoItem                 *float64             `json:"custo_item,omitempty"`
+	Alteracoes                []database.EventEdit `json:"alteracoes,omitempty"`
+	DiaOrigem                 *int                 `json:"dia_origem,omitempty"`
+	HorarioOrigem             string               `json:"horario_origem,omitempty"`
+	Secoes                    []string             `json:"secoes,omitempty"`
+	Periodo                   string               `json:"periodo,omitempty"`
+	DuracaoMin                int                  `json:"duracao_min,omitempty"`
+	Tarefas                   []string             `json:"tarefas,omitempty"`
+	Data                      string               `json:"data,omitempty"`
+	Acoes                     []ActionStep         `json:"acoes,omitempty"`
+	Tipo                      string               `json:"tipo"`           // acao, evento, ideia, adicionar_ideia, lembrar_fato, esquecer_fato, objetivo, lembrete_diario, conversa
+	Acao                      string               `json:"acao,omitempty"` // apagar_rotina, alterar_rotina, toggle_rotina, concluir_evento, apagar_evento, atualizar_meta, fazer_backup, listar_agenda, listar_lembretes
+	ID                        int64                `json:"id,omitempty"`
+	Termo                     string               `json:"termo,omitempty"`
+	Progresso                 int                  `json:"progresso,omitempty"`
+	Complexidade              string               `json:"complexidade,omitempty"` // "simples" ou "pesada"
+	Titulo                    string               `json:"titulo,omitempty"`
+	Conteudo                  string               `json:"conteudo,omitempty"`
+	SumaIdeia                 string               `json:"suma_ideia,omitempty"`
+	PerguntaSocratica         string               `json:"pergunta_socratica,omitempty"`
+	ChaveMemoria              string               `json:"chave_memoria,omitempty"`
+	ValorMemoria              string               `json:"valor_memoria,omitempty"`
+	Descricao                 string               `json:"descricao,omitempty"`
+	Frequencia                string               `json:"frequencia,omitempty"`  // "pontual", "diario", "semanal", "mensal"
+	DiaSemana                 *int                 `json:"dia_semana,omitempty"`  // 0=Domingo, 1=Segunda, ..., 6=Sábado
+	DiasSemana                []int                `json:"dias_semana,omitempty"` // Múltiplos dias da semana (0=Dom a 6=Sáb) para semanas com exceções
+	DiaMes                    *int                 `json:"dia_mes,omitempty"`     // 1 a 31
+	HorarioOficial            string               `json:"horario_oficial,omitempty"`
+	EstimativaDeslocamentoMin *int                 `json:"estimativa_deslocamento_min,omitempty"`
+	EstimativaPreparoMin      *int                 `json:"estimativa_preparo_min,omitempty"`
+	Prazo                     string               `json:"prazo,omitempty"`
+	Resposta                  string               `json:"resposta,omitempty"`
+	Horario                   string               `json:"horario,omitempty"`
+	Nome                      string               `json:"nome,omitempty"`
+	Mensagem                  string               `json:"mensagem,omitempty"`
+	URL                       string               `json:"url,omitempty"`
+	SubstituirEventoID        int64                `json:"substituir_evento_id,omitempty"`
+	DiaVencimento             int                  `json:"dia_vencimento,omitempty"`
+	Valor                     float64              `json:"valor,omitempty"`
+	Categoria                 string               `json:"categoria,omitempty"`
 
 	// Token usage telemetry
 	PromptTokens     int    `json:"-"`
@@ -79,9 +100,10 @@ type ActionStep struct {
 }
 
 type IntentContext struct {
-	Routines []database.RotinaProativa
-	Tasks    []database.DailyTask
-	Briefing []ActionStep
+	Routines          []database.RotinaProativa
+	RoutineCategories map[int64]string
+	Tasks             []database.DailyTask
+	Briefing          []ActionStep
 }
 
 var Curiosidades = []string{
@@ -271,7 +293,11 @@ func (c *Client) ParseIntent(ctx context.Context, text, currentDatetime string, 
 	if len(extra) > 0 {
 		agendaSb.WriteString("\nROTINAS EXISTENTES (use o ID correto para alterar ou cancelar; nunca invente IDs):\n")
 		for _, r := range extra[0].Routines {
-			fmt.Fprintf(&agendaSb, "- ID %d: %s às %s (tipo %s, ativo %d)\n", r.ID, r.Nome, r.Horario, r.Tipo, r.Ativo)
+			category := r.Tipo
+			if value, ok := extra[0].RoutineCategories[r.ID]; ok {
+				category = value
+			}
+			fmt.Fprintf(&agendaSb, "- ID %d: %s às %s (categoria %s, ativo %d)\n", r.ID, r.Nome, r.Horario, category, r.Ativo)
 		}
 		agendaSb.WriteString("\nCHECKLIST DO DIA (não confundir com compromissos da agenda):\n")
 		for _, task := range extra[0].Tasks {
@@ -283,42 +309,23 @@ func (c *Client) ParseIntent(ctx context.Context, text, currentDatetime string, 
 		}
 	}
 	if len(activeEvents) > 0 {
-		agendaSb.WriteString("\n\nCOMPROMISSOS ATIVOS NA AGENDA DO USUÁRIO:\n")
-		for _, ev := range activeEvents {
-			timeStr := ev.HorarioOficial
-			if ev.HorarioTime != "" {
-				timeStr = ev.HorarioTime
-			}
-			agendaSb.WriteString(fmt.Sprintf("- ID %d: \"%s\" às %s (frequência: %s)\n", ev.ID, ev.Descricao, timeStr, ev.Frequencia))
-		}
-		agendaSb.WriteString("Se o usuário estiver corrigindo, ajustando, refazendo ou alterando o horário de um compromisso acima (ou disser que errou), defina 'substituir_evento_id' com o ID correspondente.\n")
+		agendaSb.WriteString("\n\n" + schedule.Format(activeEvents, "COMPROMISSOS ATIVOS — grupos e IDs reais", time.UTC))
+		agendaSb.WriteString("\nPara alterar uma linha existente use acao alterar_evento com seu ID. Cada dia/horário tem ID próprio. Não transforme atualização em cadastro nem delete e recrie a atividade.\n")
 	}
 
 	systemPrompt := fmt.Sprintf(`Você é o ATLAS: assistente pessoal executivo de alto nível, inspirado no JARVIS.
 Horário atual de referência: %s.%s%s%s
 
-SEUS ALGORITMOS E CAPACIDADES INTERNAS (REAIS):
-1. Algoritmo Anti-Atraso (Margem Determinística de +15%%):
-   - Aplica matematicamente: Tempo_Real = t * 1.15 para deslocamento e preparo.
-   - Buffer 2 (Saída): Horário Oficial menos tempo de deslocamento com margem.
-   - Buffer 1 (Preparo): Buffer 2 menos tempo de preparo com margem.
-2. Motor de Proatividade em Goroutines Concorrentes (Go Ticker de 30s):
-   - Notificações automáticas nos minutos exatos dos Buffers de saída e preparo.
-   - Disparo pontual de rotinas diárias e lembretes programados.
-3. Auditoria Pós-Evento:
-   - 15 minutos após o encerramento previsto de um compromisso, pergunta educadamente se foi concluído.
-4. Sincronização de Calendário Universal (RFC 5545 iCal):
-   - Gera feeds .ics seguros com alarmes sonoros embutidos (VALARM) para Google Calendar, Apple e Android.
-5. Painel HUD Visual Integrado (Telegram WebApp):
-   - Interface terminal escura para controle de rotinas, metas e agenda.
-6. Memória Permanente e Perfil:
-   - Armazena fatos, profissão, rotinas e preferências do usuário para nunca esquecer quem ele é.
-7. Gestão de Ideias Contínua com Suma Acumulada:
-   - Toda vez que o usuário traz uma ideia ou adiciona pensamentos, concatena o resumo fiel e mantém uma Suma Executiva estruturada sempre atualizada.
-8. Radar de E-mails Somente-Leitura (IMAP Seguro):
-   - Conexão de leitura na caixa de entrada para triagem de e-mails importantes, filtrando spams e destacando o que exige ação.
-9. Processamento e Análise de Documentos Multiformato:
-   - Extração e análise profunda de documentos nos formatos mais usados do mercado: PDF, Microsoft Office (.docx, .xlsx, .pptx, .doc, .xls, .ppt), OpenDocument (.odt, .ods, .odp), Livros Digitais (.epub), Rich Text (.rtf), dados tabulares (.csv, .tsv, .json, .xml), código e áudios.
+%s
+Núcleo: organização pessoal; planejamento prático e gratuito, checklist, agenda e briefing.
+CONCEITOS INCONFUNDÍVEIS:
+- Compromisso: possui início e duração, único cadastro da agenda. Recorrência pertence ao compromisso.
+- Calendário: visualização da agenda, não outra entidade para cadastrar ou editar.
+- Tarefa: checklist sem horário fixo. Plano: desdobramento prático de uma tarefa com orçamento de tempo.
+- Lembrete: texto fixo programado. Automação: executa ferramenta e envia conteúdo atualizado.
+- Rotina/dia: visão geral de compromissos, tarefas e envios. "Minha rotina" => acao ver_dia; não crie outro cadastro chamado rotina.
+- Nunca exclua de outra categoria quando não encontrar o alvo. Preserve IDs e categorias reais do contexto.
+Agenda aplica margem de 15%% para preparo/saída e consulta conclusão após o evento. iCal é exportação, não leitura de calendários externos.
 
 PERSONALIDADE (ESTILO JARVIS):
 - Calmo, sofisticado, sóbrio, educado, altamente competente e respeitoso.
@@ -369,6 +376,7 @@ Aceite variações naturais como: "marque", "anote", "agende", "crie um compromi
   "descricao": "Nome do compromisso",
   "frequencia": "pontual" ou "diario" ou "semanal" ou "mensal",
   "horario": "HH:MM",
+  "duracao_min": 180,
   "horario_oficial": "YYYY-MM-DD HH:MM:SS" (obrigatório se frequencia for "pontual"),
   "dia_semana": 0 a 6 (se for apenas um dia da semana, 0=Dom, 1=Seg, 2=Ter, 3=Qua, 4=Qui, 5=Sex, 6=Sáb),
   "dias_semana": [1, 2, 3] (obrigatório quando o usuário indicar múltiplos dias ou exceções na semana, ex: "segunda a sexta" -> [1,2,3,4,5], "exceto domingo e segunda" -> [2,3,4,5,6], "terça e quinta" -> [2,4]),
@@ -377,6 +385,19 @@ Aceite variações naturais como: "marque", "anote", "agende", "crie um compromi
   "estimativa_preparo_min": 35,
   "substituir_evento_id": 0
 }
+Para novo compromisso, a duração deve vir do usuário. Se faltar, duracao_min=0: o bot pergunta antes de salvar.
+"Dura 2-3 horas", "de 2 a 3 horas", "entre 2 e 3 horas": sempre considere o limite superior, 180 minutos. Um horário de início como "às 18h" NÃO é duração.
+Preserve duração ao alterar apenas horário/dia. Para mudar a duração, use acao alterar_evento e duracao_min, ou o mesmo campo em cada alteração do lote.
+5.1. CONSULTAR E ALTERAR COMPROMISSOS:
+"todos os meus compromissos", "minha agenda", "ver as aulas": tipo acao, acao listar_agenda. "Agenda de hoje": listar_agenda_hoje. Sempre execute a consulta; não escreva uma lista própria na resposta.
+Atividades como Aula são agrupadas pelo nome, mas cada linha tem dia, horário e ID independentes.
+"Mude a Aula de sexta para 08:30": {"tipo":"acao","acao":"alterar_evento","id":ID_REAL_DA_SEXTA,"dia_origem":5,"horario":"08:30"}.
+Só envie os campos que o usuário quer modificar. Nunca preencha frequência, outros dias, preparo ou deslocamento com defaults ao editar.
+Se faltar identificação entre várias linhas, consulte a agenda e peça dia/horário ou ID; nunca escolha a primeira/última por nome.
+"Mude segunda e quarta": {"tipo":"acao","acao":"alterar_evento","alteracoes":[{"id":ID_SEGUNDA,"horario":"19:00"},{"id":ID_QUARTA,"horario":"19:00"}]}.
+Cada alteração é parcial e o lote é atômico. Para mover uma linha a outro dia, use dia_origem para selecionar e dia_semana para o novo dia. Não use dias_semana para sobrescrever uma atividade inteira.
+Se o usuário responder "sim" à pergunta de fim previsto de um compromisso no histórico, use concluir_evento com o ID e a data da ocorrência indicada, inclusive quando começou na véspera.
+Adicionar um novo dia/horário de Aula é tipo evento, sem substituir_evento_id. Se pedir apenas para ver os compromissos e depois alterá-los, primeiro liste os dados reais e peça as mudanças; não invente alterações.
 
 6. Para metas e objetivos:
 {
@@ -393,6 +414,10 @@ Aceite variações naturais como: "marque", "anote", "agende", "crie um compromi
   "horario": "HH:MM",
   "mensagem": "Mensagem exata a ser disparada todo dia"
 }
+Pode incluir frequencia diario/semanal e dias_semana. O texto é literal: mesmo contendo "liturgia", não execute a ferramenta se foi pedido um lembrete para ler/rezar.
+Listagens: listar_lembretes mostra apenas mensagens fixas; listar_automacoes mostra apenas ações programadas.
+Para alterar_rotina, toggle_rotina ou apagar_rotina, informe categoria="lembrete" ou "automacao" conforme o contexto e ID real. Nunca misture com IDs de compromissos/tarefas.
+limpar_lembretes exclui apenas mensagens fixas; limpar_automacoes exclui apenas automações. Ambas têm confirmação. O termo genérico "rotina" sem alvo específico pede esclarecimento.
 
 7.1. Para EXECUTAR UMA FERRAMENTA e enviar seu resultado periodicamente (liturgia, briefing, emails, santo, versículo, notícias):
 NUNCA classifique como evento ou lembrete textual. Exemplo: "me mande a liturgia todo dia às 7h".
@@ -456,6 +481,16 @@ Planejar não cria evento com horário de saída e não é uma ideia abstrata. U
 Secoes disponíveis: rotina (agenda, rotinas e checklist), agenda, rotinas, checklist, briefing. Pode combinar seções.
 Periodo: dia, semana ou mes. Data inicial opcional YYYY-MM-DD. Sem período, usa próximos 7 dias.
 O PDF usa os dados reais do banco e envia um documento ao Telegram. Nunca invente horários para tarefas que só têm duração.
+7.9. SIMULAÇÃO DE COMPRA: o cálculo e os 20 níveis são determinísticos, não opinião da IA.
+"Meu salário mensal é R$ 5000": {"tipo":"acao","acao":"definir_salario","salario":5000}.
+"Posso comprar um item de 1000, com gastos de 2000 e dívidas de 500?": {"tipo":"acao","acao":"simular_compra","custo_item":1000,"gastos":2000,"dividas":500}.
+Salario é opcional na simulação: sem ele, usa o salário salvo. Não invente valores. Gastos e dívidas são os valores informados para essa simulação, não some automaticamente contas cadastradas.
+Se as dívidas já estiverem incluídas nos gastos, não conte duas vezes. Não converta renda semanal/diária em mensal sem o usuário definir o valor mensal.
+O app calcula saldo = salário - gastos - dívidas; saldo/custo >=2 atinge reserva mínima, >=10 atinge o nível 20. Se o salário não existir, o app pergunta e preserva os outros valores.
+7.8. AUTOCONHECIMENTO: "o que você consegue fazer?", "você pode gerar PDF?", "qual integração está disponível?":
+{"tipo":"acao","acao":"ver_capacidades","termo":"pdf"}
+Termo opcional filtra o catálogo. Consultar capacidades não executa a ferramenta. Falta de credencial não significa recurso inexistente.
+Para pedidos concretos, use a ação real. Terminal: executar_terminal com termo=comando explícito; rastreamento: rastrear_site com url; conselho: deliberar com termo=tema; painel: abrir_painel; consumo: ver_tokens; metas: listar_metas; ideias: listar_ideias/ver_ideia (id opcional).
 
 8. Para ações do app, contas/cartões/assinaturas, buscas e exclusões ("anotar cartão dia 10", "paguei a netflix", "quais contas vencem?", "delete o dentista", "delete isso"):
 {
@@ -477,7 +512,7 @@ O PDF usa os dados reais do banco e envia um documento ao Telegram. Nunca invent
   "complexidade": "simples" ou "pesada" ou "pesquisa" (use "pesquisa" quando for solicitação de estudo aprofundado, pesquisa extensa, artigos, dossiê ou resumo detalhado),
   "resposta": "Sua resposta equilibrada, polida e perspicaz (apenas se complexidade for simples)"
 }
-`, currentDatetime, memSb.String(), ideiaSb.String(), agendaSb.String())
+`, currentDatetime, memSb.String(), ideiaSb.String(), agendaSb.String(), c.capabilityPrompt())
 
 	messages := []ChatMessagePayload{
 		{Role: "system", Content: systemPrompt},
@@ -590,6 +625,7 @@ func (c *Client) AnalyzeWithModel(ctx context.Context, model, text string, maxTo
 	payload := ChatCompletionRequest{
 		Model: model,
 		Messages: []ChatMessagePayload{
+			{Role: "system", Content: c.capabilityPrompt()},
 			{Role: "user", Content: text},
 		},
 		Temperature: 0.3,
@@ -614,6 +650,7 @@ func (c *Client) DeepAnalyze(ctx context.Context, text string, history []databas
 	systemPrompt := `Você é o ATLAS: assistente executivo e estrategista de alto nível estilo JARVIS.
 Você foi acionado para uma análise aprofundada, pesquisa ou raciocínio complexo.
 Responda com extrema sofisticação, profundidade analítica, clareza cirúrgica e elegância, apontando dados, riscos, custos de oportunidade e passos recomendados.`
+	systemPrompt += c.capabilityPrompt()
 
 	messages := []ChatMessagePayload{
 		{Role: "system", Content: systemPrompt},
@@ -659,6 +696,7 @@ Diretrizes do Perfil de Pesquisa:
 2. Apresente múltiplos pontos de vista, referências, artigos e escolas de pensamento relevantes.
 3. Estruture em tópicos claros, com introdução, desenvolvimento analítico, exemplos práticos e conclusões executivas.
 4. Jamais economize explicações essenciais: priorize riqueza conceitual, precisão e clareza analítica.`
+	systemPrompt += c.capabilityPrompt()
 
 	messages := []ChatMessagePayload{
 		{Role: "system", Content: systemPrompt},

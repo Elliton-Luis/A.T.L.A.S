@@ -29,7 +29,7 @@ func TestCanonicalizeSynonyms(t *testing.T) {
 	}
 
 	// 3. Testa sinônimos de lembretes
-	lembreteWords := []string{"lembrete", "lembretes", "rotinas", "avisos", "notificações"}
+	lembreteWords := []string{"lembrete", "lembretes", "avisos", "notificações"}
 	for _, w := range lembreteWords {
 		canon := CanonicalizeWord(w)
 		if canon != "lembrete" {

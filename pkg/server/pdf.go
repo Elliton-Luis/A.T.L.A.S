@@ -2,7 +2,6 @@ package server
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"os"
 	"regexp"
@@ -149,7 +148,7 @@ func (s *Server) pdfDocument(ctx context.Context, intent *nlu.IntentResult) (exp
 	document := exportpdf.Document{Title: "ATLAS — Calendário pessoal", Subtitle: fmt.Sprintf("%s a %s | %s", start.Format("02/01/2006"), end.Format("02/01/2006"), s.cfg.Location.String())}
 	var events map[string][]database.Evento
 	if selected["agenda"] {
-		events, err = s.db.EventsForRange(ctx, start.Format("2006-01-02"), days)
+		events, err = s.db.EventsForRange(ctx, start.Format("2006-01-02"), days, s.cfg.Location)
 		if err != nil {
 			return document, err
 		}
@@ -183,6 +182,21 @@ func (s *Server) pdfDocument(ctx context.Context, intent *nlu.IntentResult) (exp
 					return document, fmt.Errorf("horário inválido no compromisso %s: %w", event.Descricao, err)
 				}
 				row := exportpdf.Row{Time: official.Format("15:04"), Activity: event.Descricao}
+				if official.Format("2006-01-02") != date {
+					row.Time = official.Format("02/01 15:04")
+					row.Activity += " (iniciado em outro dia)"
+				}
+				if event.DuracaoMin != nil {
+					end := official.Add(time.Duration(*event.DuracaoMin) * time.Minute)
+					label := end.Format("15:04")
+					if end.Format("2006-01-02") != date {
+						label = end.Format("02/01 15:04")
+					}
+					row.Time += "\n" + label
+					row.Activity += fmt.Sprintf(" (%d min)", *event.DuracaoMin)
+				} else {
+					row.Activity += " (duração não informada)"
+				}
 				if event.Status == "concluido" {
 					row.Activity += " (concluído)"
 				}
@@ -214,24 +228,16 @@ func (s *Server) pdfDocument(ctx context.Context, intent *nlu.IntentResult) (exp
 				section.Rows = append(section.Rows, row)
 			}
 			for _, routine := range routines {
-				match := true
-				if routine.Tipo == "action" && routine.PromptCustom != nil {
-					var action scheduler.ActionRoutine
-					if err := json.Unmarshal([]byte(*routine.PromptCustom), &action); err != nil {
-						return document, fmt.Errorf("rotina %d contém ação inválida", routine.ID)
-					}
-					if len(action.Days) > 0 {
-						match = false
-						for _, d := range action.Days {
-							if d == int(day.Weekday()) {
-								match = true
-								break
-							}
-						}
-					}
+				match, err := scheduler.ScheduledForDay(routine, day)
+				if err != nil {
+					return document, fmt.Errorf("envio %d contém dados inválidos", routine.ID)
 				}
 				if match {
-					section.Rows = append(section.Rows, exportpdf.Row{Time: routine.Horario, Activity: "Rotina: " + routine.Nome})
+					label := "Automação: "
+					if scheduler.RoutineKind(routine) == "lembrete" {
+						label = "Lembrete: "
+					}
+					section.Rows = append(section.Rows, exportpdf.Row{Time: routine.Horario, Activity: label + routine.Nome})
 				}
 			}
 			sort.SliceStable(section.Rows, func(i, j int) bool { return section.Rows[i].Time < section.Rows[j].Time })

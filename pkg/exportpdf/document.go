@@ -49,7 +49,7 @@ func Render(document Document) ([]byte, error) {
 		y -= 28
 	}
 	columns := func() {
-		text(44, y, 8, true, "Horário")
+		text(44, y, 8, true, "Início/fim")
 		text(110, y, 8, true, "Atividade")
 		text(392, y, 8, true, "Preparo")
 		text(475, y, 8, true, "Saída")
