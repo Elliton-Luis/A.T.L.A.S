@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -130,11 +131,19 @@ type ChatMessagePayload struct {
 }
 
 type ChatCompletionRequest struct {
-	Model       string               `json:"model"`
-	Messages    []ChatMessagePayload `json:"messages"`
-	Temperature float64              `json:"temperature"`
-	MaxTokens   int                  `json:"max_tokens"`
-	Structured  bool                 `json:"-"`
+	Model            string               `json:"model"`
+	Messages         []ChatMessagePayload `json:"messages"`
+	Temperature      float64              `json:"temperature"`
+	MaxTokens        int                  `json:"max_tokens"`
+	Structured       bool                 `json:"-"`
+	ResponseFormat   *ResponseFormat      `json:"response_format,omitempty"`
+	ReasoningEffort  string               `json:"reasoning_effort,omitempty"`
+	ReasoningFormat  string               `json:"reasoning_format,omitempty"`
+	IncludeReasoning *bool                `json:"include_reasoning,omitempty"`
+}
+
+type ResponseFormat struct {
+	Type string `json:"type"`
 }
 
 type ChatCompletionResponse struct {
@@ -273,7 +282,7 @@ func buildCleanHistory(history []database.ChatMessage, currentInput string) []Ch
 // ParseIntent sends the user's message along with sliding history, active events and long-term memory to NLU.
 func (c *Client) ParseIntent(ctx context.Context, text, currentDatetime string, history []database.ChatMessage, userMemories []database.MemoriaUsuario, latestIdeia *database.Ideia, activeEvents []database.Evento, extra ...IntentContext) (*IntentResult, error) {
 	if c.groqPool.IsEmpty() && c.nvidiaPool.IsEmpty() {
-		return nil, fmt.Errorf("nenhuma chave de IA (Groq ou NVIDIA) configurada")
+		return nil, ErrNoProvider
 	}
 
 	var memSb strings.Builder
@@ -733,6 +742,7 @@ Diretrizes do Perfil de Pesquisa:
 }
 
 func (c *Client) doRequest(ctx context.Context, payload ChatCompletionRequest) (*APIResponse, error) {
+	var failures []error
 	// 1. Tenta Groq primeiro (velocidade relâmpago de ~0.3s) com pool de chaves
 	if !c.groqPool.IsEmpty() {
 		groqPayload := payload
@@ -741,16 +751,34 @@ func (c *Client) doRequest(ctx context.Context, payload ChatCompletionRequest) (
 		if err == nil && res != nil {
 			return res, nil
 		}
+		failures = append(failures, err)
+		// Quotas/model access are model-scoped. Use one production alternative
+		// before the independently configured NVIDIA provider, without loops.
+		if ctx.Err() == nil && modelFallbackAllowed(err) && c.groqModel != "openai/gpt-oss-20b" {
+			groqPayload.Model = "openai/gpt-oss-20b"
+			res, fallbackErr := c.executePoolAPI(ctx, "https://api.groq.com/openai/v1/chat/completions", c.groqPool, groqPayload)
+			if fallbackErr == nil && res != nil {
+				return res, nil
+			}
+			failures = append(failures, fallbackErr)
+		}
 	}
 
 	// 2. Fallback para NVIDIA NIM com pool de chaves caso Groq oscile
 	if !c.nvidiaPool.IsEmpty() {
 		nvidiaPayload := payload
 		nvidiaPayload.Model = c.nvidiaModel
-		return c.executePoolAPI(ctx, "https://integrate.api.nvidia.com/v1/chat/completions", c.nvidiaPool, nvidiaPayload)
+		res, err := c.executePoolAPI(ctx, "https://integrate.api.nvidia.com/v1/chat/completions", c.nvidiaPool, nvidiaPayload)
+		if err == nil && res != nil {
+			return res, nil
+		}
+		failures = append(failures, err)
 	}
 
-	return nil, fmt.Errorf("nenhum provedor de IA (Groq ou NVIDIA) configurado com sucesso")
+	if len(failures) == 0 {
+		return nil, ErrNoProvider
+	}
+	return nil, errors.Join(failures...)
 }
 
 func (c *Client) executePoolAPI(ctx context.Context, url string, keyPool *pool.KeyPool, payload ChatCompletionRequest) (*APIResponse, error) {
@@ -773,6 +801,10 @@ func (c *Client) executePoolAPI(ctx context.Context, url string, keyPool *pool.K
 }
 
 func (c *Client) executeAPI(ctx context.Context, url, apiKey string, payload ChatCompletionRequest) (*APIResponse, error) {
+	provider := "NVIDIA"
+	if strings.Contains(url, "groq") {
+		provider = "Groq"
+	}
 	// Preserve the provider quota budget for prose. Structured extraction uses
 	// its own configured budget so longer action JSON is not silently truncated.
 	if strings.Contains(url, "groq") && !payload.Structured && payload.MaxTokens > 350 {
@@ -780,6 +812,20 @@ func (c *Client) executeAPI(ctx context.Context, url, apiKey string, payload Cha
 	}
 	if payload.MaxTokens <= 0 {
 		payload.MaxTokens = 300
+	}
+	if provider == "Groq" {
+		if payload.Structured {
+			payload.ResponseFormat = &ResponseFormat{Type: "json_object"}
+		}
+		if strings.HasPrefix(payload.Model, "qwen/") {
+			payload.ReasoningEffort = "none"
+			payload.ReasoningFormat = "hidden"
+		}
+		if strings.HasPrefix(payload.Model, "openai/gpt-oss-") {
+			payload.ReasoningEffort = "low"
+			hidden := false
+			payload.IncludeReasoning = &hidden
+		}
 	}
 
 	body, err := json.Marshal(payload)
@@ -804,13 +850,23 @@ func (c *Client) executeAPI(ctx context.Context, url, apiKey string, payload Cha
 
 	resp, err := c.httpClient.Do(req)
 	if err != nil {
-		return nil, fmt.Errorf("do req to %s: %w", url, err)
+		return nil, &TransportError{Provider: provider, Cause: err}
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
-		respBody, _ := io.ReadAll(resp.Body)
-		return nil, fmt.Errorf("api status %d: %s", resp.StatusCode, string(respBody))
+		respBody, _ := io.ReadAll(io.LimitReader(resp.Body, 8192))
+		var detail struct {
+			Error struct {
+				Code string `json:"code"`
+			} `json:"error"`
+		}
+		_ = json.Unmarshal(respBody, &detail)
+		code := detail.Error.Code
+		if !providerCode.MatchString(code) {
+			code = "provider_error"
+		}
+		return nil, &ProviderError{Provider: provider, Model: payload.Model, Status: resp.StatusCode, Code: code}
 	}
 
 	var res ChatCompletionResponse
@@ -822,17 +878,17 @@ func (c *Client) executeAPI(ctx context.Context, url, apiKey string, payload Cha
 		return nil, fmt.Errorf("api returned 0 choices")
 	}
 	if res.Choices[0].FinishReason == "length" {
-		return nil, fmt.Errorf("resposta truncada pelo limite de tokens")
+		return nil, ErrTruncated
 	}
 
-	provider := "groq"
+	provider = "groq"
 	if strings.Contains(url, "nvidia") {
 		provider = "nvidia"
 	}
 
 	content := strings.TrimSpace(res.Choices[0].Message.Content)
-	if content == "" && res.Choices[0].Message.Reasoning != "" {
-		content = strings.TrimSpace(res.Choices[0].Message.Reasoning)
+	if content == "" {
+		return nil, ErrNoFinalAnswer
 	}
 
 	return &APIResponse{

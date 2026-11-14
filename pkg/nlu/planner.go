@@ -31,7 +31,7 @@ Exemplo para inglês: procurar um texto infantil curto, ler e anotar palavras, u
 Responda SOMENTE JSON, conciso:
 {"dificuldade":"facil","passos":[{"acao":"Leia um texto infantil curto em inglês","minutos":10,"conclusao":"5 palavras anotadas","gratuito":true,"pratico":true,"recurso":"URL opcional do catálogo"}]}
 %s`, goal, minutes, minimum, maximum, minutes, planner.Resources)
-	response, err := c.doRequest(ctx, ChatCompletionRequest{Messages: []ChatMessagePayload{{Role: "system", Content: prompt}}, Temperature: 0.2, MaxTokens: 240 + 80*maximum, Structured: true})
+	response, err := c.doRequest(ctx, ChatCompletionRequest{Messages: []ChatMessagePayload{{Role: "system", Content: prompt}, {Role: "user", Content: fmt.Sprintf("Crie o plano para %s, usando exatamente %d minutos.", goal, minutes)}}, Temperature: 0.2, MaxTokens: 240 + 80*maximum, Structured: true})
 	if err != nil {
 		return plan, err
 	}
