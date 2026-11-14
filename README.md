@@ -52,3 +52,50 @@ curl -F "url=https://seu-dominio.com/webhook" \
      -F "secret_token=SEU_SECRET_TOKEN" \
      https://api.telegram.org/botSEU_TOKEN/setWebhook
 ```
+
+## Briefing pessoal diário
+
+O briefing reúne os itens escolhidos pelo usuário, na ordem configurada. Exemplos em linguagem natural:
+
+- "Configure meu briefing às 07:00 com liturgia, santo do dia, um versículo sobre confiança, todos os compromissos, checklist e notícias sobre tecnologia."
+- "Inclua no briefing este pensamento: focar no essencial."
+- "Adicione um resumo dos meus emails de hoje ao briefing."
+- "Mude o tema das notícias do briefing para economia."
+- "Remova o santo do dia do briefing."
+
+Comandos de consulta e manutenção:
+
+- `/briefing` — gera o briefing agora.
+- `/briefing config` — mostra composição e horário de envio.
+- `/briefing configurar <descrição>` — define a composição completa.
+- `/briefing adicionar <descrição>` — acrescenta itens preservando os anteriores.
+- `/briefing remover <número>` — remove um item da composição.
+- `/briefing horario 07:00` — define o envio diário.
+
+Os temas bíblicos são convertidos em referências durante a configuração; as citações são consultadas nas fontes bíblicas existentes. Pensamentos fornecidos pelo usuário são guardados como texto, não gerados pela IA. Também é possível incluir a última ideia registrada.
+
+Agenda e checklist são consultados novamente a cada briefing. Liturgia, santo e passagem bíblica usam cache por data; notícias usam cache de até 30 minutos. Falhas de uma fonte aparecem no respectivo item sem impedir os demais. No modo serverless, o cron externo precisa continuar chamando `/api/cron/tick`.
+
+## Checklist de metas diárias
+
+Tarefas são separadas dos compromissos com horário e das metas de longo prazo.
+
+- "Anote minhas tarefas de hoje: estudar Go, treinar e ler."
+- "Anote que fiz estudar Go."
+- "Quais são minhas metas diárias?"
+- "O que fiz ontem?"
+
+Comandos equivalentes:
+
+- `/tarefa Estudar Go; Treinar; Ler` — anota várias tarefas.
+- `/tarefas` ou `/checklist` — lista o dia atual com marcações de conclusão.
+- `/feito <nome ou ID>` — conclui uma tarefa.
+- `/tarefas ontem` ou `/tarefas 2026-11-14` — consulta outro dia.
+
+Cada dia tem seu próprio checklist. O dia seguinte começa vazio; dias anteriores permanecem no banco, inclusive com horário de conclusão. Repetir uma tarefa no mesmo dia não duplica o registro nem desfaz sua conclusão. Nomes ambíguos exigem identificação antes de marcar qualquer item.
+
+## Consultas com resumo
+
+"Veja meus emails e faça um resumo" retorna os emails relevantes e um parágrafo de síntese usando a mesma leitura e uma única inferência. A contagem informa a amostra consultada, não o total da caixa. Filtros como remetente e período são preservados.
+
+`/resumo <texto>` resume o texto informado; `/resumo emails de hoje` consulta e resume emails. Consultas combinadas podem compartilhar os resultados em uma síntese final.

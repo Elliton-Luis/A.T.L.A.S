@@ -22,6 +22,12 @@ var naturalFromQuery = regexp.MustCompile(`(?i)\b(?:emails?|e-mails?|correio)\s+
 var subjectQuery = regexp.MustCompile(`(?i)\bassunto\s*:?\s*(.+?)(?:\s+(?:desde|hoje|ontem)\b|$)`)
 var sinceQuery = regexp.MustCompile(`\bdesde\s+(\d{4}-\d{2}-\d{2})\b`)
 var uidQuery = regexp.MustCompile(`(?i)\buid\s*:?\s*([0-9]+)\b`)
+var summaryClause = regexp.MustCompile(`(?i)\s*(?:[,;]|\s+(?:e|depois|então|entao|em seguida))\s+(?:(?:faça|faca|faz|fazer|mande|envie|traga)\s+)?(?:(?:um|uma|o|a)\s+)?(?:resum\w*|s[ií]ntese|sintetiz\w*|sumariz\w*)\b.*$`)
+
+// Split a dependent synthesis instruction from mailbox filters.
+func queryText(text string) string {
+	return strings.TrimSpace(summaryClause.ReplaceAllString(text, ""))
+}
 
 func HasQueryFilters(text string) bool {
 	clean := synonyms.RemoveAccents(strings.ToLower(text))
@@ -29,6 +35,7 @@ func HasQueryFilters(text string) bool {
 }
 
 func ParseQuery(text string, now time.Time) Query {
+	text = queryText(text)
 	clean := synonyms.RemoveAccents(strings.ToLower(text))
 	q := Query{Unread: true}
 	for _, pattern := range []*regexp.Regexp{fromQuery, naturalFromQuery} {

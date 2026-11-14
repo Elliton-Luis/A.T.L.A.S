@@ -2,6 +2,7 @@ package database
 
 import (
 	"context"
+	"database/sql"
 	"fmt"
 	"time"
 )
@@ -87,8 +88,16 @@ func (db *DB) SaveActionRoutine(ctx context.Context, name, hour, payload string)
 		return 0, err
 	}
 	defer tx.Rollback()
+	id, err := saveActionRoutineTx(ctx, tx, name, hour, payload)
+	if err != nil {
+		return 0, err
+	}
+	return id, tx.Commit()
+}
+
+func saveActionRoutineTx(ctx context.Context, tx *sql.Tx, name, hour, payload string) (int64, error) {
 	var id int64
-	err = tx.QueryRowContext(ctx, `INSERT INTO rotinas_proativas (nome, horario, tipo, prompt_custom, ativo)
+	err := tx.QueryRowContext(ctx, `INSERT INTO rotinas_proativas (nome, horario, tipo, prompt_custom, ativo)
 		VALUES (?, ?, 'action', ?, 1)
 		ON CONFLICT(nome) WHERE tipo = 'action' DO UPDATE SET horario = excluded.horario, prompt_custom = excluded.prompt_custom, ativo = 1
 		RETURNING id`, name, hour, payload).Scan(&id)
@@ -100,5 +109,5 @@ func (db *DB) SaveActionRoutine(ctx context.Context, name, hour, payload string)
 			return 0, err
 		}
 	}
-	return id, tx.Commit()
+	return id, nil
 }

@@ -27,36 +27,39 @@ type Client struct {
 }
 
 type IntentResult struct {
-	Tipo                      string  `json:"tipo"`           // acao, evento, ideia, adicionar_ideia, lembrar_fato, esquecer_fato, objetivo, lembrete_diario, conversa
-	Acao                      string  `json:"acao,omitempty"` // apagar_rotina, alterar_rotina, toggle_rotina, concluir_evento, apagar_evento, atualizar_meta, fazer_backup, listar_agenda, listar_lembretes
-	ID                        int64   `json:"id,omitempty"`
-	Termo                     string  `json:"termo,omitempty"`
-	Progresso                 int     `json:"progresso,omitempty"`
-	Complexidade              string  `json:"complexidade,omitempty"` // "simples" ou "pesada"
-	Titulo                    string  `json:"titulo,omitempty"`
-	Conteudo                  string  `json:"conteudo,omitempty"`
-	SumaIdeia                 string  `json:"suma_ideia,omitempty"`
-	PerguntaSocratica         string  `json:"pergunta_socratica,omitempty"`
-	ChaveMemoria              string  `json:"chave_memoria,omitempty"`
-	ValorMemoria              string  `json:"valor_memoria,omitempty"`
-	Descricao                 string  `json:"descricao,omitempty"`
-	Frequencia                string  `json:"frequencia,omitempty"`  // "pontual", "diario", "semanal", "mensal"
-	DiaSemana                 *int    `json:"dia_semana,omitempty"`  // 0=Domingo, 1=Segunda, ..., 6=Sábado
-	DiasSemana                []int   `json:"dias_semana,omitempty"` // Múltiplos dias da semana (0=Dom a 6=Sáb) para semanas com exceções
-	DiaMes                    *int    `json:"dia_mes,omitempty"`     // 1 a 31
-	HorarioOficial            string  `json:"horario_oficial,omitempty"`
-	EstimativaDeslocamentoMin *int    `json:"estimativa_deslocamento_min,omitempty"`
-	EstimativaPreparoMin      *int    `json:"estimativa_preparo_min,omitempty"`
-	Prazo                     string  `json:"prazo,omitempty"`
-	Resposta                  string  `json:"resposta,omitempty"`
-	Horario                   string  `json:"horario,omitempty"`
-	Nome                      string  `json:"nome,omitempty"`
-	Mensagem                  string  `json:"mensagem,omitempty"`
-	URL                       string  `json:"url,omitempty"`
-	SubstituirEventoID        int64   `json:"substituir_evento_id,omitempty"`
-	DiaVencimento             int     `json:"dia_vencimento,omitempty"`
-	Valor                     float64 `json:"valor,omitempty"`
-	Categoria                 string  `json:"categoria,omitempty"`
+	Tarefas                   []string     `json:"tarefas,omitempty"`
+	Data                      string       `json:"data,omitempty"`
+	Acoes                     []ActionStep `json:"acoes,omitempty"`
+	Tipo                      string       `json:"tipo"`           // acao, evento, ideia, adicionar_ideia, lembrar_fato, esquecer_fato, objetivo, lembrete_diario, conversa
+	Acao                      string       `json:"acao,omitempty"` // apagar_rotina, alterar_rotina, toggle_rotina, concluir_evento, apagar_evento, atualizar_meta, fazer_backup, listar_agenda, listar_lembretes
+	ID                        int64        `json:"id,omitempty"`
+	Termo                     string       `json:"termo,omitempty"`
+	Progresso                 int          `json:"progresso,omitempty"`
+	Complexidade              string       `json:"complexidade,omitempty"` // "simples" ou "pesada"
+	Titulo                    string       `json:"titulo,omitempty"`
+	Conteudo                  string       `json:"conteudo,omitempty"`
+	SumaIdeia                 string       `json:"suma_ideia,omitempty"`
+	PerguntaSocratica         string       `json:"pergunta_socratica,omitempty"`
+	ChaveMemoria              string       `json:"chave_memoria,omitempty"`
+	ValorMemoria              string       `json:"valor_memoria,omitempty"`
+	Descricao                 string       `json:"descricao,omitempty"`
+	Frequencia                string       `json:"frequencia,omitempty"`  // "pontual", "diario", "semanal", "mensal"
+	DiaSemana                 *int         `json:"dia_semana,omitempty"`  // 0=Domingo, 1=Segunda, ..., 6=Sábado
+	DiasSemana                []int        `json:"dias_semana,omitempty"` // Múltiplos dias da semana (0=Dom a 6=Sáb) para semanas com exceções
+	DiaMes                    *int         `json:"dia_mes,omitempty"`     // 1 a 31
+	HorarioOficial            string       `json:"horario_oficial,omitempty"`
+	EstimativaDeslocamentoMin *int         `json:"estimativa_deslocamento_min,omitempty"`
+	EstimativaPreparoMin      *int         `json:"estimativa_preparo_min,omitempty"`
+	Prazo                     string       `json:"prazo,omitempty"`
+	Resposta                  string       `json:"resposta,omitempty"`
+	Horario                   string       `json:"horario,omitempty"`
+	Nome                      string       `json:"nome,omitempty"`
+	Mensagem                  string       `json:"mensagem,omitempty"`
+	URL                       string       `json:"url,omitempty"`
+	SubstituirEventoID        int64        `json:"substituir_evento_id,omitempty"`
+	DiaVencimento             int          `json:"dia_vencimento,omitempty"`
+	Valor                     float64      `json:"valor,omitempty"`
+	Categoria                 string       `json:"categoria,omitempty"`
 
 	// Token usage telemetry
 	PromptTokens     int    `json:"-"`
@@ -64,6 +67,18 @@ type IntentResult struct {
 	TotalTokens      int    `json:"-"`
 	ProvedorUsado    string `json:"-"`
 	ModeloUsado      string `json:"-"`
+}
+
+type ActionStep struct {
+	Acao   string `json:"acao"`
+	Termo  string `json:"termo,omitempty"`
+	Titulo string `json:"titulo,omitempty"`
+}
+
+type IntentContext struct {
+	Routines []database.RotinaProativa
+	Tasks    []database.DailyTask
+	Briefing []ActionStep
 }
 
 var Curiosidades = []string{
@@ -231,7 +246,7 @@ func buildCleanHistory(history []database.ChatMessage, currentInput string) []Ch
 }
 
 // ParseIntent sends the user's message along with sliding history, active events and long-term memory to NLU.
-func (c *Client) ParseIntent(ctx context.Context, text, currentDatetime string, history []database.ChatMessage, userMemories []database.MemoriaUsuario, latestIdeia *database.Ideia, activeEvents []database.Evento, routines ...[]database.RotinaProativa) (*IntentResult, error) {
+func (c *Client) ParseIntent(ctx context.Context, text, currentDatetime string, history []database.ChatMessage, userMemories []database.MemoriaUsuario, latestIdeia *database.Ideia, activeEvents []database.Evento, extra ...IntentContext) (*IntentResult, error) {
 	if c.groqPool.IsEmpty() && c.nvidiaPool.IsEmpty() {
 		return nil, fmt.Errorf("nenhuma chave de IA (Groq ou NVIDIA) configurada")
 	}
@@ -250,10 +265,18 @@ func (c *Client) ParseIntent(ctx context.Context, text, currentDatetime string, 
 	}
 
 	var agendaSb strings.Builder
-	if len(routines) > 0 {
+	if len(extra) > 0 {
 		agendaSb.WriteString("\nROTINAS EXISTENTES (use o ID correto para alterar ou cancelar; nunca invente IDs):\n")
-		for _, r := range routines[0] {
+		for _, r := range extra[0].Routines {
 			fmt.Fprintf(&agendaSb, "- ID %d: %s às %s (tipo %s, ativo %d)\n", r.ID, r.Nome, r.Horario, r.Tipo, r.Ativo)
+		}
+		agendaSb.WriteString("\nCHECKLIST DO DIA (não confundir com compromissos da agenda):\n")
+		for _, task := range extra[0].Tasks {
+			fmt.Fprintf(&agendaSb, "- ID %d: %s (concluída: %t)\n", task.ID, task.Description, task.Done)
+		}
+		agendaSb.WriteString("\nCOMPOSIÇÃO ATUAL DO BRIEFING (número identifica posição do item):\n")
+		for i, item := range extra[0].Briefing {
+			fmt.Fprintf(&agendaSb, "- %d: %s (ação: %s; parâmetro: %s)\n", i+1, item.Titulo, item.Acao, item.Termo)
 		}
 	}
 	if len(activeEvents) > 0 {
@@ -383,6 +406,39 @@ Para mudar/cancelar rotina existente, use alterar_rotina/apagar_rotina e ID exis
 "Mude para 8h" ou "cancele esse envio" refere-se à rotina discutida no histórico; se ambíguo, pergunte.
 Para briefing imediato use tipo acao, acao briefing. Briefing usa agenda, rotinas, metas e contas reais.
 Email aceita filtros por remetente, assunto, hoje/ontem e desde YYYY-MM-DD; preserve esses filtros em termo.
+Para "veja meus emails e faça um resumo", use acao resumir_emails. Produz lista relevante E parágrafo de síntese com uma só leitura.
+Para resumo de texto fornecido ou da resposta anterior, use acao resumir e termo com o texto (ou "isso").
+
+7.2. Para combinar CONSULTAS e opcionalmente resumir seus resultados:
+{"tipo":"sequencia","acoes":[{"acao":"ler_emails","termo":"hoje"},{"acao":"listar_agenda"},{"acao":"resumir"}]}
+Execute na ordem pedida. O resumo consome os resultados anteriores, não precisa buscar novamente.
+Consultas disponíveis: ler_emails, listar_agenda, listar_lembretes, listar_contas, ver_perfil, briefing, liturgia, liturgia_das_horas, santo_do_dia, versiculo_biblico, noticias.
+Use no máximo 8 etapas. resumir deve ser a última. Não inclua alterações, exclusões ou execução de código nessa sequência.
+
+7.3. BRIEFING PESSOAL CONFIGURÁVEL: conteúdo diário escolhido pelo usuário, persistido na ordem desejada.
+Para "quero meu briefing com liturgia, santo, versículo sobre confiança, meu pensamento e agenda, às 7h":
+{"tipo":"acao","acao":"configurar_briefing","horario":"07:00","acoes":[{"acao":"liturgia"},{"acao":"santo_do_dia"},{"acao":"versiculo_biblico","termo":"Provérbios 3:5-6","titulo":"Versículo sobre confiança"},{"acao":"pensamento","termo":"texto literal fornecido pelo usuário"},{"acao":"listar_agenda"}]}
+Itens possíveis: agenda_completa (agenda/rotinas/metas/contas), listar_agenda (todos os compromissos do dia), liturgia, santo_do_dia, liturgia_das_horas (termo=hora), versiculo_biblico (termo=referência real), pensamento (termo=texto literal), ideia (termo=ID de ideia existente, vazio=última ideia), noticias_resumo (termo=tema escolhido), resumir_emails (termo=filtros), listar_contas, listar_lembretes.
+listar_tarefas inclui o checklist de metas diárias no briefing.
+Para versículo sobre tema, escolha uma referência bíblica real e preserve o tema em titulo. O texto será buscado na Bíblia; nunca escreva ou invente a citação.
+Nunca invente pensamentos pessoais. Se o usuário não fornecer texto, use ideia para consultar a última ideia registrada.
+"Adicione/inclua X no meu briefing": acao adicionar_briefing, acoes contendo SOMENTE os novos itens. Não substitua os anteriores.
+"Remova X do briefing": acao remover_briefing e termo identificando nome, tema ou número do item.
+"Mude o tema de notícias do briefing para economia": acao alterar_briefing, id=número do item existente e acoes=[apenas o novo item]. Preserve a posição e os outros itens.
+Para reordenar, use configurar_briefing com todos os itens atuais na ordem pedida. Não omita itens anteriores sem solicitação de remoção.
+"O que tem no meu briefing?": acao ver_briefing.
+Use configurar_briefing apenas quando o usuário definir a composição completa. Sem alterar conteúdo, mudança de horário continua alterar_rotina.
+Horario é opcional; omita quando o usuário não informar. Não crie horários ou temas de notícias que não foram pedidos.
+
+7.4. CHECKLIST / METAS DIÁRIAS (sem horário obrigatório, diferente de compromissos e objetivos de longo prazo):
+"Anote minhas tarefas de hoje: estudar Go, treinar e ler":
+{"tipo":"acao","acao":"anotar_tarefas","tarefas":["Estudar Go","Treinar","Ler"]}
+"Anote que fiz tal task", "fiz o treino", "terminei de estudar":
+{"tipo":"acao","acao":"concluir_tarefa","id":0,"termo":"nome da tarefa do checklist"}
+Use ID real do checklist acima quando identificar. Nunca marque compromisso como tarefa nem invente que uma tarefa já foi anotada.
+Mapeie variações naturais como "fiz o treino" para "Treinar" usando os IDs existentes. Se mais de uma tarefa combinar, peça identificação.
+"Minhas metas diárias", "checklist", "o que fiz ontem": acao listar_tarefas; data opcional YYYY-MM-DD (use a referência atual para resolver ontem).
+Sem data explícita, ações usam hoje. Tarefas ficam no histórico por data; novo dia começa vazio, sem apagar dias anteriores.
 
 8. Para ações do app, contas/cartões/assinaturas, buscas e exclusões ("anotar cartão dia 10", "paguei a netflix", "quais contas vencem?", "delete o dentista", "delete isso"):
 {

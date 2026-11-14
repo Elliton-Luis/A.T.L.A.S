@@ -15,11 +15,16 @@ func TestCanonicalizeSynonyms(t *testing.T) {
 	}
 
 	// 2. Testa sinônimos de agenda
-	agendaWords := []string{"agenda", "compromissos", "eventos", "tarefas", "afazeres"}
+	agendaWords := []string{"agenda", "compromissos", "eventos"}
 	for _, w := range agendaWords {
 		canon := CanonicalizeWord(w)
 		if canon != "agenda" {
 			t.Errorf("word '%s' should canonicalize to 'agenda', got '%s'", w, canon)
+		}
+	}
+	for _, w := range []string{"tarefa", "tarefas", "afazeres", "checklist", "task", "tasks"} {
+		if canonical := CanonicalizeWord(w); canonical != "tarefa" {
+			t.Errorf("%s: esperado tarefa, recebido %s", w, canonical)
 		}
 	}
 

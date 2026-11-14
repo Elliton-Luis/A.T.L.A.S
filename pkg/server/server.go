@@ -45,7 +45,7 @@ type Server struct {
 	interpreter *interpreter.Runner
 	crawler     *crawler.Crawler
 	swarm       *swarm.Orchestrator
-	emailReader *email.Reader
+	emailReader emailReader
 	mux         *http.ServeMux
 }
 
@@ -376,9 +376,18 @@ func (s *Server) processIncomingMessage(ctx context.Context, msg *telegram.Messa
 
 	// 2.2 Fast-Path Router Determinístico (Zero Tokens & Resposta Instantânea <1ms)
 	if fastCmd, ok := matchFastPath(inputText); ok {
-		_ = s.db.RecordHistory(ctx, "user", inputText)
-		s.handleCommand(ctx, chatID, fastCmd)
-		return
+		if strings.HasPrefix(fastCmd, "/feito ") {
+			if reply, handled := s.spokenTaskCompletion(ctx, strings.TrimPrefix(fastCmd, "/feito ")); handled {
+				_ = s.db.RecordHistory(ctx, "user", inputText)
+				_ = s.tg.SendMessage(ctx, chatID, reply)
+				_ = s.db.RecordHistory(ctx, "assistant", reply)
+				return
+			}
+		} else {
+			_ = s.db.RecordHistory(ctx, "user", inputText)
+			s.handleCommand(ctx, chatID, fastCmd)
+			return
+		}
 	}
 	if reply, handled := s.handleAutomation(ctx, inputText); handled {
 		_ = s.db.RecordHistory(ctx, "user", inputText)
@@ -398,8 +407,10 @@ func (s *Server) processIncomingMessage(ctx context.Context, msg *telegram.Messa
 	latestIdeia, _ := s.db.GetLatestActiveIdeia(ctx)
 	activeEvents, _ := s.db.GetUpcomingEvents(ctx, 10)
 	routines, _ := s.db.GetAllRoutines(ctx)
+	tasks, _ := s.db.DailyTasks(ctx, s.today())
+	briefingItems, _ := s.briefingIntentContext(ctx)
 
-	intent, err := s.nluClient.ParseIntent(ctx, inputText, currentDatetime, history, memories, latestIdeia, activeEvents, routines)
+	intent, err := s.nluClient.ParseIntent(ctx, inputText, currentDatetime, history, memories, latestIdeia, activeEvents, nlu.IntentContext{Routines: routines, Tasks: tasks, Briefing: briefingItems})
 	if err != nil {
 		log.Printf("[Erro NLU] %v\n", err)
 		reply := "⚠️ Ocorreu uma oscilação no processamento do seu pensamento. Repita de forma mais concisa."
@@ -475,6 +486,8 @@ func (s *Server) processIncomingMessage(ctx context.Context, msg *telegram.Messa
 	var reply string
 
 	switch intent.Tipo {
+	case "sequencia":
+		reply = s.executeSequence(ctx, intent.Acoes)
 	case "ideia":
 		suma := intent.SumaIdeia
 		if suma == "" {
@@ -882,6 +895,8 @@ func (s *Server) createEventoFromIntent(ctx context.Context, intent *nlu.IntentR
 
 func (s *Server) executeAppAction(ctx context.Context, intent *nlu.IntentResult) string {
 	switch intent.Acao {
+	case "listar_tarefas", "anotar_tarefas", "concluir_tarefa":
+		return s.taskAction(ctx, intent)
 	case "santo_do_dia", "santo":
 		santoText, err := catholic.FetchSantoDoDia(ctx)
 		if err != nil {
@@ -986,12 +1001,24 @@ func (s *Server) executeAppAction(ctx context.Context, intent *nlu.IntentResult)
 			return fmt.Sprintf("⚠️ Falha ao ler e-mails: %v", err)
 		}
 		return result
+	case "resumir_emails":
+		result, err := s.emailResult(ctx, intent.Termo, true)
+		if err != nil {
+			return fmt.Sprintf("⚠️ Falha ao consultar e resumir e-mails: %v", err)
+		}
+		return result
+	case "resumir", "resumo":
+		return s.summarize(ctx, intent.Termo)
 	case "briefing":
 		result, err := s.engine.BuildBriefing(ctx, s.today())
 		if err != nil {
 			return "⚠️ Não foi possível consultar os dados do briefing."
 		}
 		return result
+	case "configurar_briefing", "adicionar_briefing", "remover_briefing", "alterar_briefing":
+		return s.configureBriefing(ctx, intent)
+	case "ver_briefing":
+		return s.showBriefingConfig(ctx)
 
 	case "executar_codigo", "executar_python", "python":
 		code := strings.TrimSpace(intent.Termo)
@@ -1251,6 +1278,10 @@ func (s *Server) handleCommand(ctx context.Context, chatID int64, cmdText string
 	cmd := strings.ToLower(parts[0])
 
 	switch cmd {
+	case "/tarefas", "/checklist", "/metas_hoje", "/tarefa", "/feito":
+		text := s.taskCommand(ctx, cmd, strings.TrimSpace(strings.TrimPrefix(cmdText, parts[0])))
+		_ = s.tg.SendMessage(ctx, chatID, text)
+		_ = s.db.RecordHistory(ctx, "assistant", text)
 	case "/start", "/ajuda", "/help":
 		msg := `🤖 *ATLAS — Como Usar (Simples e Direto)*
 
@@ -1277,6 +1308,13 @@ func (s *Server) handleCommand(ctx context.Context, chatID int64, cmdText string
 • 🕷️ */crawl <url>* — Rastrear e consolidar páginas de um site
 • 🏛️ */swarm <tema>* — Conselho de 3 especialistas (Pesquisador, Analista, Crítico)
 • ☀️ */briefing* / 🌙 */review* — Briefing matinal e auditoria socrática do dia
+• ☀️ */briefing config* — Ver a composição do briefing diário
+• ☀️ */briefing configurar <itens>* — Escolher conteúdo, temas e ordem
+• ☑️ */tarefas* ou */checklist* — Checklist de metas diárias
+• ➕ */tarefa <texto; outro texto>* — Anotar tarefas de hoje
+• ✅ */feito <nome ou ID>* — Marcar tarefa concluída
+• 🗂️ */tarefas ontem* ou */tarefas YYYY-MM-DD* — Consultar histórico
+• 📝 */resumo <texto>* — Resumir texto ou combinar com uma consulta
 • 📬 */emails* — Ler e curar e-mails importantes (somente leitura)
 • 📄 *Envio de Arquivos* — Envie PDFs, CSVs, TXT, código ou áudios para leitura direta
 
@@ -1686,9 +1724,20 @@ func (s *Server) handleCommand(ctx context.Context, chatID int64, cmdText string
 		_ = s.db.RecordHistory(ctx, "assistant", hudMsg)
 
 	case "/briefing":
-		text, err := s.engine.BuildBriefing(ctx, s.today())
-		if err != nil {
-			text = "⚠️ Não foi possível consultar os dados do briefing."
+		text := s.briefingCommand(ctx, strings.TrimSpace(strings.TrimPrefix(cmdText, parts[0])))
+		_ = s.tg.SendMessage(ctx, chatID, text)
+		_ = s.db.RecordHistory(ctx, "assistant", text)
+	case "/resumo", "/resumir", "/sintese":
+		request := strings.TrimSpace(strings.TrimPrefix(cmdText, parts[0]))
+		var text string
+		if action, _ := routineAction(request); action == "ler_emails" {
+			var err error
+			text, err = s.emailResult(ctx, request, true)
+			if err != nil {
+				text = fmt.Sprintf("⚠️ Falha ao consultar e resumir e-mails: %v", err)
+			}
+		} else {
+			text = s.summarize(ctx, request)
 		}
 		_ = s.tg.SendMessage(ctx, chatID, text)
 		_ = s.db.RecordHistory(ctx, "assistant", text)
@@ -2161,7 +2210,16 @@ func matchFastPath(text string) (string, bool) {
 	if strings.HasPrefix(clean, "conselho ") {
 		return "/swarm " + strings.TrimSpace(text[len("conselho "):]), true
 	}
+	if command, ok := checklistFastPath(text); ok {
+		return command, true
+	}
 	if automationOperation(clean) && (!bulkCleanup && !deleteBill || synonyms.MatchCanonical(tokensForOperation, "nao")) {
+		return "", false
+	}
+	if isBriefingConfiguration(clean) {
+		return "", false
+	}
+	if requiresSequence(clean) {
 		return "", false
 	}
 	if clean == "briefing" || clean == "meu briefing" || clean == "briefing matinal" {
@@ -2178,7 +2236,7 @@ func matchFastPath(text string) (string, bool) {
 		isConfigIntent := strings.Contains(clean, "meu email e ") || strings.Contains(clean, "meu email:") ||
 			strings.Contains(clean, "mudar email") || strings.Contains(clean, "alterar email") || strings.Contains(clean, "trocar email")
 		if !isConfigIntent {
-			if email.HasQueryFilters(clean) {
+			if email.HasQueryFilters(clean) || email.WantsSummary(clean) || strings.Contains(clean, "recentes") || strings.Contains(clean, "ultimos") {
 				return "/emails " + text, true
 			}
 			return "/emails", true

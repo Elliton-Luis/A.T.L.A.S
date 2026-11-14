@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"regexp"
+	"strconv"
 	"strings"
 	"time"
 
@@ -116,6 +117,9 @@ func (s *Server) saveScheduledAction(ctx context.Context, intent *nlu.IntentResu
 // handleAutomation handles unambiguous daily read actions without an LLM round trip.
 func (s *Server) handleAutomation(ctx context.Context, text string) (string, bool) {
 	clean := synonyms.RemoveAccents(strings.ToLower(text))
+	if isBriefingConfiguration(text) {
+		return "", false
+	}
 	if !automationOperation(clean) {
 		return "", false
 	}
@@ -214,6 +218,33 @@ func (s *Server) executeScheduledAction(ctx context.Context, action scheduler.Ac
 	switch action.Action {
 	case "briefing":
 		return s.engine.BuildBriefing(ctx, s.today())
+	case "agenda_completa":
+		return s.engine.BuildDefaultBriefing(ctx, s.today())
+	case "pensamento":
+		return action.Term, nil
+	case "ideia":
+		var idea *database.Ideia
+		var err error
+		if action.Term == "" {
+			idea, err = s.db.GetLatestActiveIdeia(ctx)
+		} else {
+			var id int64
+			id, err = strconv.ParseInt(action.Term, 10, 64)
+			if err == nil {
+				idea, err = s.db.GetIdeiaByID(ctx, id)
+			}
+		}
+		if err != nil {
+			return "", err
+		}
+		if idea == nil {
+			return "Nenhum pensamento registrado ainda.", nil
+		}
+		return idea.Titulo + "\n" + idea.Conteudo, nil
+	case "noticias_resumo":
+		return s.briefingNews(ctx, action.Term)
+	case "resumir_emails":
+		return s.emailResult(ctx, action.Term, true)
 	case "liturgia":
 		return web.FetchLiturgiaDiaria(ctx)
 	case "liturgia_das_horas":
@@ -224,7 +255,7 @@ func (s *Server) executeScheduledAction(ctx context.Context, action scheduler.Ac
 		return catholic.FetchPassage(ctx, action.Term)
 	case "ler_emails":
 		return s.readEmails(ctx, action.Term)
-	case "noticias":
+	case "noticias", "listar_agenda", "listar_lembretes", "listar_contas", "listar_tarefas":
 		result := s.executeAppAction(ctx, &nlu.IntentResult{Acao: action.Action, Termo: action.Term})
 		if strings.HasPrefix(result, "⚠️") {
 			return "", fmt.Errorf("%s", result)

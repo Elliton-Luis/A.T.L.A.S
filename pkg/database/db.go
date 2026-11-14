@@ -285,6 +285,28 @@ func (db *DB) migrate(ctx context.Context, isRemote bool) error {
 		PRIMARY KEY(evento_id, data)
 	);
 	CREATE INDEX IF NOT EXISTS idx_ocorrencias_data ON ocorrencias_concluidas(data);
+	CREATE TABLE IF NOT EXISTS briefing_config (
+		id INTEGER PRIMARY KEY CHECK(id = 1),
+		itens_json TEXT NOT NULL
+	);
+	CREATE TABLE IF NOT EXISTS briefing_cache (
+		data TEXT NOT NULL,
+		chave TEXT NOT NULL,
+		conteudo TEXT NOT NULL,
+		expira_em TEXT NOT NULL,
+		PRIMARY KEY(data, chave)
+	);
+	CREATE TABLE IF NOT EXISTS tarefas_diarias (
+		id INTEGER PRIMARY KEY AUTOINCREMENT,
+		data TEXT NOT NULL,
+		descricao TEXT NOT NULL,
+		chave TEXT NOT NULL,
+		concluida INTEGER NOT NULL DEFAULT 0,
+		criado_em DATETIME DEFAULT CURRENT_TIMESTAMP,
+		concluido_em DATETIME,
+		UNIQUE(data, chave)
+	);
+	CREATE INDEX IF NOT EXISTS idx_tarefas_data ON tarefas_diarias(data, id);
 
 	CREATE TABLE IF NOT EXISTS contas_a_pagar (
 		id INTEGER PRIMARY KEY AUTOINCREMENT,

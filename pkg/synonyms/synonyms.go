@@ -62,10 +62,13 @@ var canonicalMap = map[string]string{
 	"compromissos": "agenda",
 	"evento":       "agenda",
 	"eventos":      "agenda",
-	"tarefa":       "agenda",
-	"tarefas":      "agenda",
-	"afazer":       "agenda",
-	"afazeres":     "agenda",
+	"tarefa":       "tarefa",
+	"tarefas":      "tarefa",
+	"afazer":       "tarefa",
+	"afazeres":     "tarefa",
+	"task":         "tarefa",
+	"tasks":        "tarefa",
+	"checklist":    "tarefa",
 
 	// Lembretes e Rotinas -> "lembrete"
 	"lembrete":     "lembrete",
@@ -142,6 +145,19 @@ var canonicalMap = map[string]string{
 	"enviar":           "enviar",
 	"mande":            "enviar",
 	"mandar":           "enviar",
+	// Síntese pode compor uma consulta sem descartar a ação anterior.
+	"resumo":     "resumir",
+	"resumos":    "resumir",
+	"resumir":    "resumir",
+	"resuma":     "resumir",
+	"resume":     "resumir",
+	"resumindo":  "resumir",
+	"sintese":    "resumir",
+	"sinteses":   "resumir",
+	"sintetize":  "resumir",
+	"sintetizar": "resumir",
+	"sumarize":   "resumir",
+	"sumarizar":  "resumir",
 
 	// Santo do Dia -> "santo"
 	"santo":      "santo",

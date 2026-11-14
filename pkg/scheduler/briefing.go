@@ -2,16 +2,106 @@ package scheduler
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
+	"log"
 	"strings"
+	"sync"
 	"time"
 
 	"atlas/pkg/calculator"
 	"atlas/pkg/database"
 )
 
-// BuildBriefing renders stored facts without requiring an AI provider.
+// BuildBriefing composes configured sources, retaining their order and isolating failures.
 func (e *Engine) BuildBriefing(ctx context.Context, date string) (string, error) {
+	body, err := e.db.GetBriefingConfig(ctx)
+	if err != nil {
+		return "", err
+	}
+	if body == "" {
+		return e.BuildDefaultBriefing(ctx, date)
+	}
+	var items []ActionRoutine
+	if err := json.Unmarshal([]byte(body), &items); err != nil {
+		return "", err
+	}
+	if len(items) == 0 || len(items) > 12 {
+		return "", fmt.Errorf("composição de briefing inválida")
+	}
+	day, err := time.ParseInLocation("2006-01-02", date, e.cfg.Location)
+	if err != nil {
+		return "", err
+	}
+	sections := make([]string, len(items))
+	semaphore := make(chan struct{}, 4)
+	var wg sync.WaitGroup
+	for i, item := range items {
+		wg.Add(1)
+		go func(i int, item ActionRoutine) {
+			defer wg.Done()
+			select {
+			case semaphore <- struct{}{}:
+			case <-ctx.Done():
+				sections[i] = "⚠️ " + item.Title + ": tempo de consulta esgotado."
+				return
+			}
+			defer func() { <-semaphore }()
+			sectionCtx, cancel := context.WithTimeout(ctx, 12*time.Second)
+			defer cancel()
+			content, err := e.briefingSection(sectionCtx, day, item)
+			if err != nil || strings.TrimSpace(content) == "" {
+				log.Printf("[Briefing] Falha em %s: %v", item.Action, err)
+				content = "⚠️ Fonte indisponível neste envio."
+			}
+			sections[i] = "*" + item.Title + "*\n" + content
+		}(i, item)
+	}
+	wg.Wait()
+	return fmt.Sprintf("☀️ *ATLAS — Briefing Pessoal*\n📅 %s\n\n%s", day.Format("02/01/2006"), strings.Join(sections, "\n\n")), nil
+}
+
+func (e *Engine) briefingSection(ctx context.Context, day time.Time, item ActionRoutine) (string, error) {
+	if item.Action == "pensamento" {
+		return item.Term, nil
+	}
+	if item.Action == "agenda_completa" {
+		text, err := e.BuildDefaultBriefing(ctx, day.Format("2006-01-02"))
+		if _, body, ok := strings.Cut(text, "\n\n"); ok {
+			text = body
+		}
+		return text, err
+	}
+	cacheable := item.Action == "liturgia" || item.Action == "santo_do_dia" || item.Action == "versiculo_biblico" || item.Action == "noticias_resumo"
+	key := item.Action + ":" + item.Term
+	date := day.Format("2006-01-02")
+	if cacheable {
+		cached, err := e.db.GetBriefingCache(ctx, date, key)
+		if err == nil && cached != "" {
+			return cached, nil
+		}
+	}
+	if e.ExecuteAction == nil {
+		return "", fmt.Errorf("executor de briefing indisponível")
+	}
+	content, err := e.ExecuteAction(ctx, item)
+	if err != nil {
+		return "", err
+	}
+	if cacheable && strings.TrimSpace(content) != "" && !strings.HasPrefix(content, "⚠️") {
+		expires := day.AddDate(0, 0, 1)
+		if item.Action == "noticias_resumo" && time.Now().Add(30*time.Minute).Before(expires) {
+			expires = time.Now().Add(30 * time.Minute)
+		}
+		if err := e.db.SaveBriefingCache(ctx, date, key, content, expires); err != nil {
+			log.Printf("[Briefing] Cache %s: %v", item.Action, err)
+		}
+	}
+	return content, nil
+}
+
+// BuildDefaultBriefing renders stored facts without requiring an AI provider.
+func (e *Engine) BuildDefaultBriefing(ctx context.Context, date string) (string, error) {
 	day, err := time.ParseInLocation("2006-01-02", date, e.cfg.Location)
 	if err != nil {
 		return "", err
@@ -56,6 +146,21 @@ func (e *Engine) BuildBriefing(ctx context.Context, date string) (string, error)
 				fmt.Fprintf(&b, "  Saída: %s\n", buffers.BufferLeave.Format("15:04"))
 			}
 		}
+	}
+	tasks, err := e.db.DailyTasks(ctx, date)
+	if err != nil {
+		return "", err
+	}
+	b.WriteString("\n*Checklist diário*\n")
+	if len(tasks) == 0 {
+		b.WriteString("Nenhuma tarefa anotada.\n")
+	}
+	for _, task := range tasks {
+		mark := "☐"
+		if task.Done {
+			mark = "☑"
+		}
+		fmt.Fprintf(&b, "%s %s\n", mark, task.Description)
 	}
 	b.WriteString("\n*Rotinas de hoje*\n")
 	for _, routine := range routines {
@@ -106,6 +211,7 @@ type ActionRoutine struct {
 	Action string `json:"acao"`
 	Term   string `json:"termo,omitempty"`
 	Days   []int  `json:"dias_semana,omitempty"`
+	Title  string `json:"titulo,omitempty"`
 }
 
 func routineMatchesDay(r database.RotinaProativa, day time.Time) bool {
