@@ -93,6 +93,7 @@ func New(cfg *config.Config) (*Server, error) {
 	}
 
 	s.registerRoutes()
+	engine.ExecuteAction = s.executeScheduledAction
 	return s, nil
 }
 
@@ -223,8 +224,21 @@ func (s *Server) handleWebhook(w http.ResponseWriter, r *http.Request) {
 
 	ctx, cancel := context.WithTimeout(context.Background(), 55*time.Second)
 	defer cancel()
+	key := fmt.Sprintf("telegram:%d:%d", chatID, update.UpdateID)
+	claimed, err := s.db.ClaimExecution(ctx, key)
+	if err != nil {
+		http.Error(w, "Falha ao registrar mensagem", http.StatusServiceUnavailable)
+		return
+	}
+	if !claimed {
+		w.WriteHeader(http.StatusOK)
+		return
+	}
 
 	s.processIncomingMessage(ctx, msg)
+	if err := s.db.FinishExecution(ctx, key); err != nil {
+		log.Printf("[Webhook] Registro %s: %v", key, err)
+	}
 
 	w.WriteHeader(http.StatusOK)
 	_, _ = w.Write([]byte("OK"))
@@ -346,6 +360,7 @@ func (s *Server) processIncomingMessage(ctx context.Context, msg *telegram.Messa
 
 	// 2. Comandos Diretos
 	if strings.HasPrefix(inputText, "/") {
+		_ = s.db.RecordHistory(ctx, "user", inputText)
 		s.handleCommand(ctx, chatID, inputText)
 		return
 	}
@@ -361,7 +376,14 @@ func (s *Server) processIncomingMessage(ctx context.Context, msg *telegram.Messa
 
 	// 2.2 Fast-Path Router Determinístico (Zero Tokens & Resposta Instantânea <1ms)
 	if fastCmd, ok := matchFastPath(inputText); ok {
+		_ = s.db.RecordHistory(ctx, "user", inputText)
 		s.handleCommand(ctx, chatID, fastCmd)
+		return
+	}
+	if reply, handled := s.handleAutomation(ctx, inputText); handled {
+		_ = s.db.RecordHistory(ctx, "user", inputText)
+		_ = s.tg.SendMessage(ctx, chatID, reply)
+		_ = s.db.RecordHistory(ctx, "assistant", reply)
 		return
 	}
 
@@ -375,8 +397,9 @@ func (s *Server) processIncomingMessage(ctx context.Context, msg *telegram.Messa
 	memories, _ := s.db.GetAllUserMemories(ctx)
 	latestIdeia, _ := s.db.GetLatestActiveIdeia(ctx)
 	activeEvents, _ := s.db.GetUpcomingEvents(ctx, 10)
+	routines, _ := s.db.GetAllRoutines(ctx)
 
-	intent, err := s.nluClient.ParseIntent(ctx, inputText, currentDatetime, history, memories, latestIdeia, activeEvents)
+	intent, err := s.nluClient.ParseIntent(ctx, inputText, currentDatetime, history, memories, latestIdeia, activeEvents, routines)
 	if err != nil {
 		log.Printf("[Erro NLU] %v\n", err)
 		reply := "⚠️ Ocorreu uma oscilação no processamento do seu pensamento. Repita de forma mais concisa."
@@ -427,7 +450,7 @@ func (s *Server) processIncomingMessage(ctx context.Context, msg *telegram.Messa
 	}
 
 	// 3.2 Tarefa pesada / análise complexa moderada
-	if intent.Complexidade == "pesada" {
+	if intent.Complexidade == "pesada" && (intent.Tipo == "conversa" || intent.Tipo == "pesquisa") {
 		curiosity := nlu.RandomCuriosity()
 		waitingMsg := fmt.Sprintf("⏳ *Esta solicitação exige análise aprofundada.* Acionando o núcleo de processamento inteligente da NVIDIA (Nemotron)...\n\nEnquanto isso, uma curiosidade aleatória para você:\n🦩 _%s_", curiosity)
 		_ = s.tg.SendMessage(ctx, chatID, waitingMsg)
@@ -533,6 +556,8 @@ func (s *Server) processIncomingMessage(ctx context.Context, msg *telegram.Messa
 			reply = fmt.Sprintf("🎯 *Meta Registrada:* %s%s\n\nQual é o primeiro passo concreto hoje?", intent.Titulo, prazoInfo)
 		}
 
+	case "acao_programada":
+		reply = s.saveScheduledAction(ctx, intent)
 	case "lembrete_diario":
 		if intent.Horario == "" || intent.Mensagem == "" {
 			reply = "⚠️ Por favor, especifique o horário (ex: 09:00) e a mensagem que deseja programar."
@@ -702,13 +727,12 @@ func (s *Server) findExistingEventForAdjustment(ctx context.Context, intent *nlu
 }
 
 func (s *Server) createEventoFromIntent(ctx context.Context, intent *nlu.IntentResult) string {
-	deslocamento := intent.EstimativaDeslocamentoMin
-	if deslocamento <= 0 {
-		deslocamento = 25
+	deslocamento, preparo := 25, 35
+	if intent.EstimativaDeslocamentoMin != nil && *intent.EstimativaDeslocamentoMin >= 0 {
+		deslocamento = *intent.EstimativaDeslocamentoMin
 	}
-	preparo := intent.EstimativaPreparoMin
-	if preparo <= 0 {
-		preparo = 35
+	if intent.EstimativaPreparoMin != nil && *intent.EstimativaPreparoMin >= 0 {
+		preparo = *intent.EstimativaPreparoMin
 	}
 	now := time.Now().In(s.cfg.Location)
 	diasNomes := []string{"Domingo", "Segunda-feira", "Terça-feira", "Quarta-feira", "Quinta-feira", "Sexta-feira", "Sábado"}
@@ -723,6 +747,9 @@ func (s *Server) createEventoFromIntent(ctx context.Context, intent *nlu.IntentR
 		}
 		if horarioHM == "" {
 			return "⚠️ Para compromissos diários, por favor informe o horário (ex: 'todo dia às 08:30')."
+		}
+		if _, err := time.Parse("15:04", horarioHM); err != nil {
+			return "⚠️ Informe horário válido, como 08:30."
 		}
 
 		parts := strings.Split(horarioHM, ":")
@@ -751,6 +778,9 @@ func (s *Server) createEventoFromIntent(ctx context.Context, intent *nlu.IntentR
 		}
 		if horarioHM == "" {
 			return "⚠️ Para compromissos semanais, especifique o dia e o horário (ex: 'toda segunda às 14:00' ou 'toda semana exceto domingo às 08:00')."
+		}
+		if _, err := time.Parse("15:04", horarioHM); err != nil {
+			return "⚠️ Informe horário válido, como 08:30."
 		}
 
 		parts := strings.Split(horarioHM, ":")
@@ -804,6 +834,9 @@ func (s *Server) createEventoFromIntent(ctx context.Context, intent *nlu.IntentR
 		}
 		if horarioHM == "" {
 			return "⚠️ Para compromissos mensais, especifique o dia do mês e o horário (ex: 'todo dia 5 às 10:00')."
+		}
+		if _, err := time.Parse("15:04", horarioHM); err != nil {
+			return "⚠️ Informe horário válido, como 08:30."
 		}
 		diaMes := 1
 		if intent.DiaMes != nil && *intent.DiaMes >= 1 && *intent.DiaMes <= 31 {
@@ -948,18 +981,17 @@ func (s *Server) executeAppAction(ctx context.Context, intent *nlu.IntentResult)
 		return sb.String()
 
 	case "ler_emails", "emails":
-		if !s.emailReader.IsConfigured() {
-			return "📬 *Configuração de E-mail (Somente Leitura)*\n\nPara o ATLAS ler seus e-mails e destacar o que é importante, adicione no painel da Vercel (ou no arquivo `.env`):\n\n`IMAP_HOST=imap.gmail.com`\n`IMAP_PORT=993`\n`IMAP_USER=seu_email@gmail.com`\n`IMAP_PASS=sua_senha_de_app`"
-		}
-		unread, err := s.emailReader.FetchRecentUnread(ctx, 7)
+		result, err := s.readEmails(ctx, intent.Termo)
 		if err != nil {
 			return fmt.Sprintf("⚠️ Falha ao ler e-mails: %v", err)
 		}
-		curated, err := email.CurateEmails(ctx, s.nluClient, unread)
+		return result
+	case "briefing":
+		result, err := s.engine.BuildBriefing(ctx, s.today())
 		if err != nil {
-			return "⚠️ Falha ao analisar e-mails."
+			return "⚠️ Não foi possível consultar os dados do briefing."
 		}
-		return curated
+		return result
 
 	case "executar_codigo", "executar_python", "python":
 		code := strings.TrimSpace(intent.Termo)
@@ -1029,13 +1061,17 @@ func (s *Server) executeAppAction(ctx context.Context, intent *nlu.IntentResult)
 
 	case "concluir_evento":
 		if intent.ID > 0 {
-			_ = s.db.MarkEventStatus(ctx, intent.ID, "concluido")
+			if err := s.db.CompleteEvent(ctx, intent.ID, s.today()); err != nil {
+				return "⚠️ Não foi possível concluir esse compromisso."
+			}
 			return fmt.Sprintf("✅ Compromisso [%d] marcado como concluído.", intent.ID)
 		}
 		if intent.Termo != "" {
 			id, desc, err := s.db.FindEventoByDesc(ctx, intent.Termo)
 			if err == nil {
-				_ = s.db.MarkEventStatus(ctx, id, "concluido")
+				if err := s.db.CompleteEvent(ctx, id, s.today()); err != nil {
+					return "⚠️ Não foi possível concluir esse compromisso."
+				}
 				return fmt.Sprintf("✅ Compromisso *%s* marcado como concluído com sucesso.", desc)
 			}
 		}
@@ -1186,7 +1222,7 @@ func (s *Server) executeAppAction(ctx context.Context, intent *nlu.IntentResult)
 				status = "🔴"
 			}
 			desc := r.Nome
-			if r.PromptCustom != nil && *r.PromptCustom != "" {
+			if r.Tipo == "custom" && r.PromptCustom != nil && *r.PromptCustom != "" {
 				desc = fmt.Sprintf("\"%s\"", *r.PromptCustom)
 			}
 			sb.WriteString(fmt.Sprintf("%s *[%d]* às *%s* — %s\n", status, r.ID, r.Horario, desc))
@@ -1206,7 +1242,7 @@ func (s *Server) executeAppAction(ctx context.Context, intent *nlu.IntentResult)
 		return sb.String()
 
 	default:
-		return "Comando executado com sucesso."
+		return "⚠️ Ação não reconhecida. Nenhuma alteração foi realizada."
 	}
 }
 
@@ -1509,27 +1545,9 @@ func (s *Server) handleCommand(ctx context.Context, chatID int64, cmdText string
 		_ = s.tg.SendMessage(ctx, chatID, view)
 
 	case "/rotinas", "/lembretes":
-		routines, err := s.db.GetAllRoutines(ctx)
-		if err != nil || len(routines) == 0 {
-			_ = s.tg.SendMessage(ctx, chatID, "Nenhum lembrete programado.")
-			return
-		}
-
-		var sb strings.Builder
-		sb.WriteString("⏰ *Suas Mensagens e Rotinas Diárias:*\n\n")
-		for _, r := range routines {
-			status := "🟢"
-			if r.Ativo == 0 {
-				status = "🔴"
-			}
-			desc := r.Nome
-			if r.PromptCustom != nil && *r.PromptCustom != "" {
-				desc = fmt.Sprintf("\"%s\"", *r.PromptCustom)
-			}
-			sb.WriteString(fmt.Sprintf("%s *[%d]* às *%s* — %s\n", status, r.ID, r.Horario, desc))
-		}
-		sb.WriteString("\n_Para apagar qualquer item: `/apagar <id>` (ex: `/apagar 4`)_")
-		_ = s.tg.SendMessage(ctx, chatID, sb.String())
+		text := s.executeAppAction(ctx, &nlu.IntentResult{Acao: "listar_lembretes"})
+		_ = s.tg.SendMessage(ctx, chatID, text)
+		_ = s.db.RecordHistory(ctx, "assistant", text)
 
 	case "/apagar", "/remover", "/del":
 		if len(parts) >= 2 {
@@ -1668,19 +1686,12 @@ func (s *Server) handleCommand(ctx context.Context, chatID int64, cmdText string
 		_ = s.db.RecordHistory(ctx, "assistant", hudMsg)
 
 	case "/briefing":
-		now := time.Now().In(s.cfg.Location)
-		todayStr := now.Format("2006-01-02")
-		events, _ := s.db.GetEventsForDay(ctx, todayStr)
-		goals, _ := s.db.GetActiveGoals(ctx, 5)
-
-		_ = s.tg.SendMessage(ctx, chatID, "☀️ *Compilando seu Briefing Executivo...*")
-
-		aiBriefing, err := s.nluClient.GenerateBriefing(ctx, todayStr, events, goals)
-		if err == nil && aiBriefing != "" {
-			_ = s.tg.SendMessage(ctx, chatID, fmt.Sprintf("☀️ *ATLAS — Briefing Executivo*\n\n%s", aiBriefing))
-		} else {
-			_ = s.tg.SendMessage(ctx, chatID, fmt.Sprintf("☀️ *ATLAS — Briefing Executivo*\n\n📅 Compromissos hoje: %d\n🎯 Metas ativas: %d\n\nQual sua meta principal para o dia?", len(events), len(goals)))
+		text, err := s.engine.BuildBriefing(ctx, s.today())
+		if err != nil {
+			text = "⚠️ Não foi possível consultar os dados do briefing."
 		}
+		_ = s.tg.SendMessage(ctx, chatID, text)
+		_ = s.db.RecordHistory(ctx, "assistant", text)
 
 	case "/review":
 		now := time.Now().In(s.cfg.Location)
@@ -1706,20 +1717,16 @@ func (s *Server) handleCommand(ctx context.Context, chatID int64, cmdText string
 
 		_ = s.tg.SendMessage(ctx, chatID, "📬 *Acessando sua caixa de entrada (modo seguro somente-leitura)...*")
 
-		unread, err := s.emailReader.FetchRecentUnread(ctx, 7)
+		query := strings.TrimSpace(strings.TrimPrefix(cmdText, cmd))
+		curated, err := s.readEmails(ctx, query)
 		if err != nil {
 			log.Printf("[Erro Email] %v\n", err)
 			_ = s.tg.SendMessage(ctx, chatID, fmt.Sprintf("⚠️ Falha ao ler e-mails: %v", err))
 			return
 		}
 
-		curated, err := email.CurateEmails(ctx, s.nluClient, unread)
-		if err != nil {
-			_ = s.tg.SendMessage(ctx, chatID, "⚠️ Falha ao analisar e-mails.")
-			return
-		}
-
 		_ = s.tg.SendMessage(ctx, chatID, curated)
+		_ = s.db.RecordHistory(ctx, "assistant", curated)
 
 	case "/rotina":
 		if len(parts) >= 3 && strings.ToLower(parts[2]) == "toggle" {
@@ -1793,11 +1800,11 @@ func (s *Server) handleCommand(ctx context.Context, chatID int64, cmdText string
 					mm, _ := strconv.Atoi(parts[1])
 					oficial := time.Date(now.Year(), now.Month(), now.Day(), hh, mm, 0, 0, s.cfg.Location)
 					desloc := ev.DeslocamentoMin
-					if desloc <= 0 {
+					if desloc < 0 {
 						desloc = 25
 					}
 					prep := ev.PreparoMin
-					if prep <= 0 {
+					if prep < 0 {
 						prep = 35
 					}
 					calc := calculator.Calculate(oficial, desloc, prep, calculator.DefaultDelayMargin)
@@ -2092,6 +2099,10 @@ func parseTimeFlexible(timeStr string, loc *time.Location) (time.Time, error) {
 func matchFastPath(text string) (string, bool) {
 	norm := strings.ToLower(strings.TrimSpace(text))
 	clean := strings.Trim(synonyms.RemoveAccents(norm), ".,!?\"'#;:")
+	// Mutations and recurrence must retain their parameters for automation/NLU.
+	tokensForOperation := synonyms.TokenizeAndCanonicalize(clean)
+	bulkCleanup := synonyms.MatchCanonical(tokensForOperation, "apagar") && (synonyms.MatchCanonical(tokensForOperation, "todo") || len(tokensForOperation) <= 3 && (synonyms.MatchCanonical(tokensForOperation, "agenda") || synonyms.MatchCanonical(tokensForOperation, "lembrete")))
+	deleteBill := synonyms.MatchCanonical(tokensForOperation, "apagar") && synonyms.MatchCanonical(tokensForOperation, "conta")
 
 	// 1. Terminal Sonar / Bash Shortcuts
 	if strings.HasPrefix(clean, "sonar ") {
@@ -2150,6 +2161,9 @@ func matchFastPath(text string) (string, bool) {
 	if strings.HasPrefix(clean, "conselho ") {
 		return "/swarm " + strings.TrimSpace(text[len("conselho "):]), true
 	}
+	if automationOperation(clean) && (!bulkCleanup && !deleteBill || synonyms.MatchCanonical(tokensForOperation, "nao")) {
+		return "", false
+	}
 	if clean == "briefing" || clean == "meu briefing" || clean == "briefing matinal" {
 		return "/briefing", true
 	}
@@ -2158,12 +2172,15 @@ func matchFastPath(text string) (string, bool) {
 	}
 
 	// E-mail (somente leitura e curadoria de mensagens)
-	emailTerm := strings.Contains(clean, "email") || strings.Contains(clean, "e-mail") || strings.Contains(clean, "e mail") ||
+	emailTerm := synonyms.MatchCanonical(tokensForOperation, "email") || strings.Contains(clean, "email") || strings.Contains(clean, "e-mail") || strings.Contains(clean, "e mail") ||
 		strings.Contains(clean, "inbox") || strings.Contains(clean, "caixa de entrada") || strings.Contains(clean, "correio")
 	if emailTerm {
 		isConfigIntent := strings.Contains(clean, "meu email e ") || strings.Contains(clean, "meu email:") ||
 			strings.Contains(clean, "mudar email") || strings.Contains(clean, "alterar email") || strings.Contains(clean, "trocar email")
 		if !isConfigIntent {
+			if email.HasQueryFilters(clean) {
+				return "/emails " + text, true
+			}
 			return "/emails", true
 		}
 	}

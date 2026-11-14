@@ -16,10 +16,10 @@ type BufferResult struct {
 
 // Calculate computes deterministic anti-delay buffers for an event.
 func Calculate(officialTime time.Time, travelMin, prepMin int, delayFactor float64) BufferResult {
-	if travelMin <= 0 {
+	if travelMin < 0 {
 		travelMin = 25
 	}
-	if prepMin <= 0 {
+	if prepMin < 0 {
 		prepMin = 35
 	}
 	if delayFactor <= 0 {

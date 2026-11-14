@@ -12,7 +12,18 @@ import (
 	"path/filepath"
 	"strings"
 	"time"
+	"unicode/utf8"
 )
+
+// RejectedError means Telegram explicitly rejected a message before delivery.
+type RejectedError struct {
+	Status      int
+	Description string
+}
+
+func (e *RejectedError) Error() string {
+	return fmt.Sprintf("Telegram recusou envio (%d): %s", e.Status, e.Description)
+}
 
 type Client struct {
 	botToken   string
@@ -112,11 +123,14 @@ func NewClient(botToken string) *Client {
 // SendMessage sends a text message to the specified chat, splitting into chunks if text exceeds Telegram's limit.
 func (c *Client) SendMessage(ctx context.Context, chatID int64, text string) error {
 	chunks := splitMessage(text, 4000)
-	for _, chunk := range chunks {
+	for i, chunk := range chunks {
 		if strings.TrimSpace(chunk) == "" {
 			continue
 		}
 		if err := c.sendSingleMessage(ctx, chatID, chunk); err != nil {
+			if i > 0 {
+				return fmt.Errorf("entrega parcial: %v", err)
+			}
 			return err
 		}
 	}
@@ -155,6 +169,9 @@ func (c *Client) sendSingleMessage(ctx context.Context, chatID int64, text strin
 		if resp.StatusCode == http.StatusBadRequest && bytes.Contains(respBody, []byte("can't parse entities")) {
 			return c.sendPlainMessage(ctx, chatID, text)
 		}
+		if resp.StatusCode >= 400 && resp.StatusCode < 500 {
+			return &RejectedError{Status: resp.StatusCode, Description: string(respBody)}
+		}
 		return fmt.Errorf("telegram sendMessage status %d: %s", resp.StatusCode, string(respBody))
 	}
 
@@ -182,6 +199,12 @@ func splitMessage(text string, maxLen int) []string {
 		} else if idx := strings.LastIndexAny(sub, ".;"); idx >= maxLen-200 && idx > 0 {
 			cut = idx + 1
 		}
+		for cut > 0 && !utf8.RuneStart(remaining[cut]) {
+			cut--
+		}
+		if cut == 0 {
+			_, cut = utf8.DecodeRuneInString(remaining)
+		}
 
 		chunks = append(chunks, strings.TrimRight(remaining[:cut], "\n"))
 		remaining = strings.TrimLeft(remaining[cut:], "\n")
@@ -204,6 +227,13 @@ func (c *Client) sendPlainMessage(ctx context.Context, chatID int64, text string
 		return err
 	}
 	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(resp.Body)
+		if resp.StatusCode >= 400 && resp.StatusCode < 500 {
+			return &RejectedError{Status: resp.StatusCode, Description: string(body)}
+		}
+		return fmt.Errorf("telegram sendMessage status %d", resp.StatusCode)
+	}
 	return nil
 }
 

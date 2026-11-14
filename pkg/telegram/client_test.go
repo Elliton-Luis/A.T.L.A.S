@@ -1,8 +1,13 @@
 package telegram
 
 import (
+	"context"
+	"errors"
+	"io"
+	"net/http"
 	"strings"
 	"testing"
+	"unicode/utf8"
 )
 
 func TestSplitMessage(t *testing.T) {
@@ -32,5 +37,42 @@ func TestSplitMessage(t *testing.T) {
 		if len(chunk) > 4000 {
 			t.Errorf("chunk %d exceeds 4000 chars: %d", i, len(chunk))
 		}
+	}
+}
+
+func TestSplitMessagePreservesUTF8(t *testing.T) {
+	text := strings.Repeat("á⛪", 1000)
+	chunks := splitMessage(text, 4000)
+	for _, chunk := range chunks {
+		if !utf8.ValidString(chunk) {
+			t.Fatal("corte dividiu caractere UTF-8")
+		}
+	}
+	if strings.Join(chunks, "") != text {
+		t.Fatal("conteúdo perdido no corte")
+	}
+}
+
+type responseTransport func(*http.Request) (*http.Response, error)
+
+func (f responseTransport) RoundTrip(r *http.Request) (*http.Response, error) { return f(r) }
+
+func TestPlainFallbackRejectsFailedDelivery(t *testing.T) {
+	client := NewClient("test")
+	calls := 0
+	client.httpClient.Transport = responseTransport(func(*http.Request) (*http.Response, error) {
+		calls++
+		body := `{"description":"can't parse entities"}`
+		status := 400
+		if calls == 2 {
+			status = 429
+			body = `{"description":"Too Many Requests"}`
+		}
+		return &http.Response{StatusCode: status, Body: io.NopCloser(strings.NewReader(body)), Header: make(http.Header)}, nil
+	})
+	err := client.SendMessage(context.Background(), 1, "texto")
+	var rejected *RejectedError
+	if !errors.As(err, &rejected) || rejected.Status != 429 || calls != 2 {
+		t.Fatalf("falha foi considerada sucesso: %v (%d chamadas)", err, calls)
 	}
 }

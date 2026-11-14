@@ -46,7 +46,7 @@ func TestBuildCleanHistory(t *testing.T) {
 
 	clean := buildCleanHistory(history, "Mais uma pergunta")
 	// Expected:
-	// "Vou para o Rio" (user) -> "Ótima viagem." (assistant) -> "Mais uma pergunta" (user)
+	// Preserve the unanswered user turn together with its follow-up.
 	if len(clean) != 3 {
 		t.Fatalf("expected 3 clean messages, got %d", len(clean))
 	}
@@ -56,7 +56,7 @@ func TestBuildCleanHistory(t *testing.T) {
 	if clean[1].Role != "assistant" || clean[1].Content != "Ótima viagem." {
 		t.Errorf("unexpected second message: %+v", clean[1])
 	}
-	if clean[2].Role != "user" || clean[2].Content != "Mais uma pergunta" {
+	if clean[2].Role != "user" || !strings.Contains(clean[2].Content, "Nova mensagem") || !strings.Contains(clean[2].Content, "Mais uma pergunta") {
 		t.Errorf("unexpected third message: %+v", clean[2])
 	}
 }

@@ -97,7 +97,10 @@ func (h *Handler) HandleCompleteEvent(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	_ = h.db.MarkEventStatus(r.Context(), req.ID, "concluido")
+	if err := h.db.CompleteEvent(r.Context(), req.ID, time.Now().In(h.cfg.Location).Format("2006-01-02")); err != nil {
+		http.Error(w, "Falha ao concluir evento", http.StatusInternalServerError)
+		return
+	}
 	w.Header().Set("Content-Type", "application/json")
 	_, _ = w.Write([]byte(`{"ok":true}`))
 }

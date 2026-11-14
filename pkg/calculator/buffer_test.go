@@ -28,3 +28,11 @@ func TestCalculate(t *testing.T) {
 		t.Errorf("MarginMinutes = %d, expected 10", res.MarginMinutes)
 	}
 }
+
+func TestCalculatePreservesExplicitZero(t *testing.T) {
+	official := time.Date(2026, 11, 14, 7, 0, 0, 0, time.UTC)
+	result := Calculate(official, 0, 0, DefaultDelayMargin)
+	if !result.BufferLeave.Equal(official) || !result.BufferPrep.Equal(official) || result.MarginMinutes != 0 {
+		t.Fatalf("zero foi substituído por deslocamento/preparo: %+v", result)
+	}
+}

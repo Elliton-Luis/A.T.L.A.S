@@ -2,11 +2,14 @@ package scheduler
 
 import (
 	"context"
+	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"atlas/pkg/calculator"
@@ -14,18 +17,26 @@ import (
 	"atlas/pkg/config"
 	"atlas/pkg/database"
 	"atlas/pkg/nlu"
+	"atlas/pkg/synonyms"
 	"atlas/pkg/telegram"
 )
 
-type Engine struct {
-	cfg        *config.Config
-	db         *database.DB
-	tg         *telegram.Client
-	nluClient  *nlu.Client
-	lastBackup string
+type MessageSender interface {
+	SendMessage(context.Context, int64, string) error
+	SendDocument(context.Context, int64, string, string) error
 }
 
-func NewEngine(cfg *config.Config, db *database.DB, tg *telegram.Client, nluClient *nlu.Client) *Engine {
+type Engine struct {
+	cfg           *config.Config
+	db            *database.DB
+	tg            MessageSender
+	nluClient     *nlu.Client
+	lastBackup    string
+	tickMu        sync.Mutex
+	ExecuteAction func(context.Context, ActionRoutine) (string, error)
+}
+
+func NewEngine(cfg *config.Config, db *database.DB, tg MessageSender, nluClient *nlu.Client) *Engine {
 	return &Engine{
 		cfg:       cfg,
 		db:        db,
@@ -54,6 +65,8 @@ func (e *Engine) Start(ctx context.Context) {
 // Tick executes a single scheduled evaluation pass (buffers, proactive routines, backups).
 // Can be called by internal goroutines or by an external serverless cron webhook (e.g. cron-job.org).
 func (e *Engine) Tick(ctx context.Context) {
+	e.tickMu.Lock()
+	defer e.tickMu.Unlock()
 	loc := e.cfg.Location
 	if loc == nil {
 		loc = time.Local
@@ -173,11 +186,19 @@ func (e *Engine) processEventBuffers(ctx context.Context, now time.Time, nowStr 
 	recurringEvents, err := e.db.GetActiveRecurringEvents(ctx)
 	if err == nil && len(recurringEvents) > 0 {
 		todayStr := now.Format("2006-01-02")
+		completed, err := e.db.CompletedEventIDs(ctx, todayStr)
+		if err != nil {
+			log.Printf("[Scheduler] Consulta de conclusões: %v", err)
+			return
+		}
 		weekday := int(now.Weekday())
 		loc := now.Location()
 		ultimoDiaMes := time.Date(now.Year(), now.Month()+1, 0, 0, 0, 0, 0, loc).Day()
 
 		for _, rev := range recurringEvents {
+			if completed[rev.ID] {
+				continue
+			}
 			match := false
 			freqLabel := ""
 			switch rev.Frequencia {
@@ -215,18 +236,18 @@ func (e *Engine) processEventBuffers(ctx context.Context, now time.Time, nowStr 
 			oficialToday := time.Date(now.Year(), now.Month(), now.Day(), hh, mm, 0, 0, loc)
 
 			desloc := rev.DeslocamentoMin
-			if desloc <= 0 {
+			if desloc < 0 {
 				desloc = 25
 			}
 			prep := rev.PreparoMin
-			if prep <= 0 {
+			if prep < 0 {
 				prep = 35
 			}
 
 			buffers := calculator.Calculate(oficialToday, desloc, prep, calculator.DefaultDelayMargin)
 
 			// Buffer 1 (Preparo)
-			if !now.Before(buffers.BufferPrep) && (rev.UltimaNotificacaoB1 == nil || *rev.UltimaNotificacaoB1 != todayStr) {
+			if prep > 0 && !now.Before(buffers.BufferPrep) && (rev.UltimaNotificacaoB1 == nil || *rev.UltimaNotificacaoB1 != todayStr) {
 				if now.Before(oficialToday.Add(30 * time.Minute)) {
 					msg := fmt.Sprintf("🛁 *Alerta de Preparo! (%s • +15%% margem)*\n\nHora de começar a se arrumar para:\n👉 *%s*\n⏰ Marcado para hoje às: *%02d:%02d*", freqLabel, rev.Descricao, hh, mm)
 					if err := e.tg.SendMessage(ctx, e.cfg.TelegramChatID, msg); err == nil {
@@ -236,7 +257,7 @@ func (e *Engine) processEventBuffers(ctx context.Context, now time.Time, nowStr 
 			}
 
 			// Buffer 2 (Saída)
-			if !now.Before(buffers.BufferLeave) && (rev.UltimaNotificacaoB2 == nil || *rev.UltimaNotificacaoB2 != todayStr) {
+			if desloc > 0 && !now.Before(buffers.BufferLeave) && (rev.UltimaNotificacaoB2 == nil || *rev.UltimaNotificacaoB2 != todayStr) {
 				if now.Before(oficialToday.Add(30 * time.Minute)) {
 					msg := fmt.Sprintf("🚗 *Alerta de Saída! (%s • +15%% margem)*\n\nHora de sair de casa para:\n👉 *%s*\n⏰ Marcado para hoje às: *%02d:%02d*", freqLabel, rev.Descricao, hh, mm)
 					if err := e.tg.SendMessage(ctx, e.cfg.TelegramChatID, msg); err == nil {
@@ -246,7 +267,7 @@ func (e *Engine) processEventBuffers(ctx context.Context, now time.Time, nowStr 
 			}
 
 			// Auditoria Pós-Evento (15 min após o horário oficial)
-			if !now.Before(oficialToday.Add(15 * time.Minute)) && (rev.UltimaConclusaoData == nil || *rev.UltimaConclusaoData != todayStr) {
+			if !now.Before(oficialToday.Add(15*time.Minute)) && (rev.UltimaConclusaoData == nil || *rev.UltimaConclusaoData != todayStr) {
 				if now.Before(oficialToday.Add(2 * time.Hour)) {
 					msg := fmt.Sprintf("⏱️ *Compromisso Recorrente (%s)*\n\nO evento *%s* (programado para às %02d:%02d) foi concluído com sucesso hoje?", freqLabel, rev.Descricao, hh, mm)
 					if err := e.tg.SendMessage(ctx, e.cfg.TelegramChatID, msg); err == nil {
@@ -264,33 +285,79 @@ func (e *Engine) processProactiveRoutines(ctx context.Context, todayStr, timeHM 
 		return
 	}
 
+	day, err := time.ParseInLocation("2006-01-02", todayStr, e.cfg.Location)
+	if err != nil {
+		return
+	}
+	current, err := time.Parse("15:04", timeHM)
+	if err != nil {
+		return
+	}
 	for _, r := range routines {
-		// Check if scheduled for this minute and hasn't run today
-		if r.Horario == timeHM && (r.UltimaExecucao == nil || *r.UltimaExecucao != todayStr) {
+		scheduled, err := time.Parse("15:04", r.Horario)
+		if err != nil {
+			log.Printf("[Scheduler] Horário inválido na rotina %d: %s", r.ID, r.Horario)
+			continue
+		}
+		delay := current.Sub(scheduled)
+		// Recover missed ticks for up to two hours, without sending stale daily work.
+		if delay >= 0 && delay <= 2*time.Hour && routineMatchesDay(r, day) && (r.UltimaExecucao == nil || *r.UltimaExecucao != todayStr) {
 			e.executeRoutine(ctx, r, todayStr)
 		}
 	}
 }
 
 func (e *Engine) executeRoutine(ctx context.Context, r database.RotinaProativa, todayStr string) {
-	events, _ := e.db.GetEventsForDay(ctx, todayStr)
-	goals, _ := e.db.GetActiveGoals(ctx, 5)
+	key := fmt.Sprintf("rotina:%d:%s", r.ID, todayStr)
+	if r.Tipo == "briefing" {
+		key = "briefing:" + todayStr
+	}
+	if action, err := decodeAction(r); err == nil && action.Action == "briefing" {
+		key = "briefing:" + todayStr
+	}
+	claimed, err := e.db.ClaimRoutineExecution(ctx, key)
+	if err != nil {
+		log.Printf("[Scheduler] Reserva %s: %v", key, err)
+		return
+	}
+	if !claimed {
+		return
+	}
 
 	var message string
 
 	switch r.Tipo {
 	case "briefing":
-		aiBriefing, err := e.nluClient.GenerateBriefing(ctx, todayStr, events, goals)
-		if err == nil && aiBriefing != "" {
-			message = fmt.Sprintf("☀️ *ATLAS — Briefing Matinal*\n\n%s", aiBriefing)
-		} else {
-			message = fmt.Sprintf("☀️ *ATLAS — Briefing Matinal*\n\n📅 Compromissos de hoje: %d\n🎯 Metas em andamento: %d\n\nQual é a sua prioridade absoluta hoje?", len(events), len(goals))
-		}
+		message, err = e.BuildBriefing(ctx, todayStr)
 
 	case "checkin":
+		events, eventErr := e.db.GetEventsForDay(ctx, todayStr)
+		goals, goalErr := e.db.GetActiveGoals(ctx, 100)
+		if eventErr != nil {
+			err = eventErr
+			break
+		}
+		if goalErr != nil {
+			err = goalErr
+			break
+		}
 		message = fmt.Sprintf("⚡ *ATLAS — Ponto de Situação*\n\nAgenda de hoje: %d compromisso(s) e %d meta(s) ativas. Como está o andamento das prioridades?", len(events), len(goals))
 
 	case "review":
+		events, eventErr := e.db.GetEventsForDay(ctx, todayStr)
+		goals, goalErr := e.db.GetActiveGoals(ctx, 100)
+		if eventErr != nil {
+			err = eventErr
+			break
+		}
+		if goalErr != nil {
+			err = goalErr
+			break
+		}
+		if e.nluClient == nil {
+			err = fmt.Errorf("IA não configurada para review")
+			break
+		}
 		aiReview, err := e.nluClient.GenerateReview(ctx, todayStr, events, goals)
 		if err == nil && aiReview != "" {
 			message = fmt.Sprintf("🌙 *ATLAS — Fechamento do Dia*\n\n%s", aiReview)
@@ -298,8 +365,25 @@ func (e *Engine) executeRoutine(ctx context.Context, r database.RotinaProativa, 
 			message = fmt.Sprintf("🌙 *ATLAS — Fechamento do Dia*\n\nO dia está encerrando. Suas tarefas foram cumpridas ou você tem justificativas para a procrastinação de hoje?")
 		}
 
+	case "action":
+		var action ActionRoutine
+		action, err = decodeAction(r)
+		if err == nil {
+			if e.ExecuteAction == nil {
+				err = fmt.Errorf("executor de ações indisponível")
+			} else {
+				message, err = e.ExecuteAction(ctx, action)
+			}
+		}
 	case "custom":
-		if strings.Contains(r.Nome, "Liturgia das Horas") {
+		legacy, _ := decodeAction(r)
+		if legacy.Action != "" {
+			if e.ExecuteAction == nil {
+				err = fmt.Errorf("executor de ações indisponível")
+			} else {
+				message, err = e.ExecuteAction(ctx, legacy)
+			}
+		} else if strings.Contains(r.Nome, "Liturgia das Horas") {
 			hourQuery := "auto"
 			if strings.Contains(r.Nome, "Laudes") {
 				hourQuery = "Laudes"
@@ -310,27 +394,78 @@ func (e *Engine) executeRoutine(ctx context.Context, r database.RotinaProativa, 
 			} else if strings.Contains(r.Nome, "Ofício") || strings.Contains(r.Nome, "Oficio") {
 				hourQuery = "Ofício das Leituras"
 			}
-			liveHour, err := catholic.FetchLiturgiaDasHoras(ctx, hourQuery, e.cfg.Location)
-			if err == nil && liveHour != "" {
-				message = liveHour
-			} else if r.PromptCustom != nil && *r.PromptCustom != "" {
-				message = *r.PromptCustom
-			} else {
-				message = fmt.Sprintf("⛪ *Hora da Oração — %s*", r.Nome)
-			}
+			message, err = catholic.FetchLiturgiaDasHoras(ctx, hourQuery, e.cfg.Location)
 		} else if r.PromptCustom != nil && *r.PromptCustom != "" {
 			message = *r.PromptCustom
 		} else {
 			message = fmt.Sprintf("🔔 *Alerta de Rotina: %s*", r.Nome)
 		}
+	default:
+		err = fmt.Errorf("tipo de rotina desconhecido: %s", r.Tipo)
 	}
 
+	if err != nil || message == "" {
+		log.Printf("[Scheduler] Falha na rotina %d (%s): %v", r.ID, r.Nome, err)
+		if releaseErr := e.db.SetExecutionState(ctx, key, "falhou"); releaseErr != nil {
+			log.Printf("[Scheduler] Liberação %s: %v", key, releaseErr)
+		}
+		return
+	}
 	if message != "" {
+		if err := e.db.SetExecutionState(ctx, key, "enviando"); err != nil {
+			log.Printf("[Scheduler] Não foi possível reservar entrega %s: %v", key, err)
+			return
+		}
 		if err := e.tg.SendMessage(ctx, e.cfg.TelegramChatID, message); err == nil {
-			_ = e.db.MarkRoutineExecuted(ctx, r.ID, todayStr)
+			if err := e.db.FinishExecution(ctx, key); err != nil {
+				log.Printf("[Scheduler] Registro de entrega %s: %v", key, err)
+			}
+			if err := e.db.MarkRoutineExecuted(ctx, r.ID, todayStr); err != nil {
+				log.Printf("[Scheduler] Registro da rotina %d: %v", r.ID, err)
+			}
 			log.Printf("[Scheduler] Rotina executada com sucesso: %s", r.Nome)
+		} else {
+			// Delivery may have succeeded before a network timeout. Keep the reservation
+			// rather than automatically duplicating an ambiguous Telegram delivery.
+			log.Printf("[Scheduler] Entrega não confirmada %s: %v", key, err)
+			state := "incerta"
+			var rejected *telegram.RejectedError
+			if errors.As(err, &rejected) {
+				state = "falhou"
+			}
+			if err := e.db.SetExecutionState(ctx, key, state); err != nil {
+				log.Printf("[Scheduler] Falha ao registrar estado %s: %v", key, err)
+			}
 		}
 	}
+}
+
+func decodeAction(r database.RotinaProativa) (ActionRoutine, error) {
+	var action ActionRoutine
+	if r.Tipo == "custom" && r.PromptCustom != nil {
+		// Preserve literal reminders; upgrade only exact legacy tool labels.
+		label := strings.TrimSpace(synonyms.RemoveAccents(strings.ToLower(*r.PromptCustom)))
+		switch strings.TrimPrefix(label, "/") {
+		case "liturgia", "liturgia diaria", "liturgia de hoje", "liturgia do dia":
+			action.Action = "liturgia"
+		case "briefing", "briefing matinal":
+			action.Action = "briefing"
+		case "emails", "email":
+			action.Action = "ler_emails"
+		}
+		return action, nil
+	}
+	if r.Tipo != "action" {
+		return action, nil
+	}
+	if r.PromptCustom == nil {
+		return action, fmt.Errorf("rotina sem ação")
+	}
+	err := json.Unmarshal([]byte(*r.PromptCustom), &action)
+	if err == nil && action.Action == "" {
+		err = fmt.Errorf("ação vazia")
+	}
+	return action, err
 }
 
 func (e *Engine) processDailyBackup(ctx context.Context, todayStr, timeHM string) {

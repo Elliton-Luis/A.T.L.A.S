@@ -29,10 +29,10 @@ type Evento struct {
 	NotificadoConclusao int
 	Status              string
 	CriadoEm            string
-	Frequencia          string  // 'pontual', 'diario', 'semanal', 'mensal'
-	DiaSemana           *int    // 0 = Domingo, 1 = Segunda, ..., 6 = Sábado
-	DiaMes              *int    // 1 a 31 (com validação do último dia do mês)
-	HorarioTime         string  // "HH:MM"
+	Frequencia          string // 'pontual', 'diario', 'semanal', 'mensal'
+	DiaSemana           *int   // 0 = Domingo, 1 = Segunda, ..., 6 = Sábado
+	DiaMes              *int   // 1 a 31 (com validação do último dia do mês)
+	HorarioTime         string // "HH:MM"
 	DeslocamentoMin     int
 	PreparoMin          int
 	UltimaNotificacaoB1 *string // "YYYY-MM-DD"
@@ -68,10 +68,10 @@ type MemoriaUsuario struct {
 }
 
 type TokenStats struct {
-	TotalHoje  int
-	TotalMes   int
-	TotalGroq  int
-	TotalNv    int
+	TotalHoje int
+	TotalMes  int
+	TotalGroq int
+	TotalNv   int
 }
 
 type ChatMessage struct {
@@ -273,6 +273,18 @@ func (db *DB) migrate(ctx context.Context, isRemote bool) error {
 	);
 
 	CREATE INDEX IF NOT EXISTS idx_rotinas_ativo ON rotinas_proativas(ativo, horario);
+	CREATE UNIQUE INDEX IF NOT EXISTS idx_rotinas_action_nome ON rotinas_proativas(nome) WHERE tipo = 'action';
+	CREATE TABLE IF NOT EXISTS execucoes (
+		chave TEXT PRIMARY KEY,
+		estado TEXT NOT NULL,
+		criado_em DATETIME DEFAULT CURRENT_TIMESTAMP
+	);
+	CREATE TABLE IF NOT EXISTS ocorrencias_concluidas (
+		evento_id INTEGER NOT NULL REFERENCES eventos(id) ON DELETE CASCADE,
+		data TEXT NOT NULL,
+		PRIMARY KEY(evento_id, data)
+	);
+	CREATE INDEX IF NOT EXISTS idx_ocorrencias_data ON ocorrencias_concluidas(data);
 
 	CREATE TABLE IF NOT EXISTS contas_a_pagar (
 		id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -310,21 +322,35 @@ func (db *DB) migrate(ctx context.Context, isRemote bool) error {
 
 	// Seed default routines if table is empty
 	var count int
-	if err := db.QueryRowContext(ctx, "SELECT COUNT(*) FROM rotinas_proativas").Scan(&count); err == nil && count == 0 {
-		defaultRoutines := []struct {
-			Nome    string
-			Horario string
-			Tipo    string
-		}{
-			{"briefing_matinal", "08:00", "briefing"},
-			{"checkin_tarde", "14:00", "checkin"},
-			{"review_noturno", "21:30", "review"},
+	seed, err := db.ClaimExecution(ctx, "bootstrap:rotinas:v1")
+	if err != nil {
+		return err
+	}
+	if seed {
+		if err := db.QueryRowContext(ctx, "SELECT COUNT(*) FROM rotinas_proativas").Scan(&count); err != nil {
+			return err
 		}
-		for _, r := range defaultRoutines {
-			_, _ = db.ExecContext(ctx, `
+		if count == 0 {
+			defaultRoutines := []struct {
+				Nome    string
+				Horario string
+				Tipo    string
+			}{
+				{"briefing_matinal", "08:00", "briefing"},
+				{"checkin_tarde", "14:00", "checkin"},
+				{"review_noturno", "21:30", "review"},
+			}
+			for _, r := range defaultRoutines {
+				if _, err := db.ExecContext(ctx, `
 				INSERT INTO rotinas_proativas (nome, horario, tipo, ativo)
 				VALUES (?, ?, ?, 1)
-			`, r.Nome, r.Horario, r.Tipo)
+			`, r.Nome, r.Horario, r.Tipo); err != nil {
+					return err
+				}
+			}
+		}
+		if err := db.FinishExecution(ctx, "bootstrap:rotinas:v1"); err != nil {
+			return err
 		}
 	}
 
@@ -515,6 +541,9 @@ func (db *DB) GetAllRoutines(ctx context.Context) ([]RotinaProativa, error) {
 
 // InsertRoutine adds a new daily routine / custom reminder.
 func (db *DB) InsertRoutine(ctx context.Context, nome, horario, tipo string, promptCustom *string) (int64, error) {
+	if _, err := time.Parse("15:04", horario); err != nil {
+		return 0, fmt.Errorf("horário inválido: %s", horario)
+	}
 	res, err := db.ExecContext(ctx, `
 		INSERT INTO rotinas_proativas (nome, horario, tipo, prompt_custom, ativo)
 		VALUES (?, ?, ?, ?, 1)
@@ -628,6 +657,9 @@ func (db *DB) ClearAllRoutines(ctx context.Context) (int64, error) {
 
 // UpdateRoutineTime changes the scheduled hour of a routine.
 func (db *DB) UpdateRoutineTime(ctx context.Context, id int64, newTime string) error {
+	if _, err := time.Parse("15:04", newTime); err != nil {
+		return fmt.Errorf("horário inválido: %s", newTime)
+	}
 	_, err := db.ExecContext(ctx, "UPDATE rotinas_proativas SET horario = ? WHERE id = ?", newTime, id)
 	return err
 }
@@ -734,7 +766,14 @@ func (db *DB) GetEventsForDay(ctx context.Context, dateStr string) ([]Evento, er
 	}
 
 	// Now check recurring events matching this date
+	completed, err := db.CompletedEventIDs(ctx, dateStr)
+	if err != nil {
+		return nil, err
+	}
 	recurring, err := db.GetActiveRecurringEvents(ctx)
+	if err != nil {
+		return nil, err
+	}
 	if err == nil && len(recurring) > 0 {
 		parsedDate, parseErr := time.Parse("2006-01-02", dateStr)
 		if parseErr == nil {
@@ -765,6 +804,9 @@ func (db *DB) GetEventsForDay(ctx context.Context, dateStr string) ([]Evento, er
 
 				if match {
 					revCopy := rev
+					if completed[rev.ID] {
+						revCopy.Status = "concluido"
+					}
 					if revCopy.HorarioTime != "" {
 						revCopy.HorarioOficial = fmt.Sprintf("%s %s:00", dateStr, revCopy.HorarioTime)
 					}
@@ -930,6 +972,7 @@ func (db *DB) GetPendingBuffer1Events(ctx context.Context, nowStr string) ([]Eve
 		SELECT %s
 		FROM eventos
 		WHERE notificado_buffer_1 = 0
+		  AND COALESCE(preparo_min, 35) > 0
 		  AND horario_buffer_1 IS NOT NULL
 		  AND horario_buffer_1 <= ?
 		  AND status = 'pendente'
@@ -957,6 +1000,7 @@ func (db *DB) GetPendingBuffer2Events(ctx context.Context, nowStr string) ([]Eve
 		SELECT %s
 		FROM eventos
 		WHERE notificado_buffer_2 = 0
+		  AND COALESCE(deslocamento_min, 25) > 0
 		  AND horario_buffer_2 IS NOT NULL
 		  AND horario_buffer_2 <= ?
 		  AND status = 'pendente'

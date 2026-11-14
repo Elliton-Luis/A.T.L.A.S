@@ -27,31 +27,31 @@ type Client struct {
 }
 
 type IntentResult struct {
-	Tipo                      string `json:"tipo"`           // acao, evento, ideia, adicionar_ideia, lembrar_fato, esquecer_fato, objetivo, lembrete_diario, conversa
-	Acao                      string `json:"acao,omitempty"` // apagar_rotina, alterar_rotina, toggle_rotina, concluir_evento, apagar_evento, atualizar_meta, fazer_backup, listar_agenda, listar_lembretes
-	ID                        int64  `json:"id,omitempty"`
-	Termo                     string `json:"termo,omitempty"`
-	Progresso                 int    `json:"progresso,omitempty"`
-	Complexidade              string `json:"complexidade,omitempty"` // "simples" ou "pesada"
-	Titulo                    string `json:"titulo,omitempty"`
-	Conteudo                  string `json:"conteudo,omitempty"`
-	SumaIdeia                 string `json:"suma_ideia,omitempty"`
-	PerguntaSocratica         string `json:"pergunta_socratica,omitempty"`
-	ChaveMemoria              string `json:"chave_memoria,omitempty"`
-	ValorMemoria              string `json:"valor_memoria,omitempty"`
-	Descricao                 string `json:"descricao,omitempty"`
-	Frequencia                string `json:"frequencia,omitempty"` // "pontual", "diario", "semanal", "mensal"
-	DiaSemana                 *int   `json:"dia_semana,omitempty"` // 0=Domingo, 1=Segunda, ..., 6=Sábado
-	DiasSemana                []int  `json:"dias_semana,omitempty"` // Múltiplos dias da semana (0=Dom a 6=Sáb) para semanas com exceções
-	DiaMes                    *int   `json:"dia_mes,omitempty"`    // 1 a 31
-	HorarioOficial            string `json:"horario_oficial,omitempty"`
-	EstimativaDeslocamentoMin int    `json:"estimativa_deslocamento_min,omitempty"`
-	EstimativaPreparoMin      int    `json:"estimativa_preparo_min,omitempty"`
-	Prazo                     string `json:"prazo,omitempty"`
-	Resposta                  string `json:"resposta,omitempty"`
-	Horario                   string `json:"horario,omitempty"`
-	Nome                      string `json:"nome,omitempty"`
-	Mensagem                  string `json:"mensagem,omitempty"`
+	Tipo                      string  `json:"tipo"`           // acao, evento, ideia, adicionar_ideia, lembrar_fato, esquecer_fato, objetivo, lembrete_diario, conversa
+	Acao                      string  `json:"acao,omitempty"` // apagar_rotina, alterar_rotina, toggle_rotina, concluir_evento, apagar_evento, atualizar_meta, fazer_backup, listar_agenda, listar_lembretes
+	ID                        int64   `json:"id,omitempty"`
+	Termo                     string  `json:"termo,omitempty"`
+	Progresso                 int     `json:"progresso,omitempty"`
+	Complexidade              string  `json:"complexidade,omitempty"` // "simples" ou "pesada"
+	Titulo                    string  `json:"titulo,omitempty"`
+	Conteudo                  string  `json:"conteudo,omitempty"`
+	SumaIdeia                 string  `json:"suma_ideia,omitempty"`
+	PerguntaSocratica         string  `json:"pergunta_socratica,omitempty"`
+	ChaveMemoria              string  `json:"chave_memoria,omitempty"`
+	ValorMemoria              string  `json:"valor_memoria,omitempty"`
+	Descricao                 string  `json:"descricao,omitempty"`
+	Frequencia                string  `json:"frequencia,omitempty"`  // "pontual", "diario", "semanal", "mensal"
+	DiaSemana                 *int    `json:"dia_semana,omitempty"`  // 0=Domingo, 1=Segunda, ..., 6=Sábado
+	DiasSemana                []int   `json:"dias_semana,omitempty"` // Múltiplos dias da semana (0=Dom a 6=Sáb) para semanas com exceções
+	DiaMes                    *int    `json:"dia_mes,omitempty"`     // 1 a 31
+	HorarioOficial            string  `json:"horario_oficial,omitempty"`
+	EstimativaDeslocamentoMin *int    `json:"estimativa_deslocamento_min,omitempty"`
+	EstimativaPreparoMin      *int    `json:"estimativa_preparo_min,omitempty"`
+	Prazo                     string  `json:"prazo,omitempty"`
+	Resposta                  string  `json:"resposta,omitempty"`
+	Horario                   string  `json:"horario,omitempty"`
+	Nome                      string  `json:"nome,omitempty"`
+	Mensagem                  string  `json:"mensagem,omitempty"`
 	URL                       string  `json:"url,omitempty"`
 	SubstituirEventoID        int64   `json:"substituir_evento_id,omitempty"`
 	DiaVencimento             int     `json:"dia_vencimento,omitempty"`
@@ -59,9 +59,9 @@ type IntentResult struct {
 	Categoria                 string  `json:"categoria,omitempty"`
 
 	// Token usage telemetry
-	PromptTokens     int `json:"-"`
-	CompletionTokens int `json:"-"`
-	TotalTokens      int `json:"-"`
+	PromptTokens     int    `json:"-"`
+	CompletionTokens int    `json:"-"`
+	TotalTokens      int    `json:"-"`
 	ProvedorUsado    string `json:"-"`
 	ModeloUsado      string `json:"-"`
 }
@@ -94,11 +94,13 @@ type ChatCompletionRequest struct {
 	Messages    []ChatMessagePayload `json:"messages"`
 	Temperature float64              `json:"temperature"`
 	MaxTokens   int                  `json:"max_tokens"`
+	Structured  bool                 `json:"-"`
 }
 
 type ChatCompletionResponse struct {
 	Choices []struct {
-		Message struct {
+		FinishReason string `json:"finish_reason"`
+		Message      struct {
 			Role      string `json:"role"`
 			Content   string `json:"content"`
 			Reasoning string `json:"reasoning,omitempty"`
@@ -127,7 +129,7 @@ func NewClient(groqKeys, nvidiaKeys, nvidiaModel string, maxTokensQuick, maxToke
 	if maxTokensHeavy <= 0 || maxTokensHeavy > 400 {
 		maxTokensHeavy = 350
 	}
-	if maxTokensQuick <= 0 || maxTokensQuick > 350 {
+	if maxTokensQuick <= 0 {
 		maxTokensQuick = 300
 	}
 	if maxTokensResearch <= 0 || maxTokensResearch > 800 {
@@ -209,9 +211,13 @@ func buildCleanHistory(history []database.ChatMessage, currentInput string) []Ch
 		})
 	}
 
-	// Remove trailing user turn from history to prevent duplication when currentInput is added
-	if len(clean) > 0 && clean[len(clean)-1].Role == "user" {
-		clean = clean[:len(clean)-1]
+	// Direct commands may have no recorded assistant turn. Preserve their context
+	// instead of discarding the request that a follow-up refers to.
+	if len(clean) > 0 && clean[len(clean)-1].Role == "user" && currentInput != "" {
+		if clean[len(clean)-1].Content != currentInput {
+			clean[len(clean)-1].Content += "\n\nMensagem atual: " + currentInput
+		}
+		return clean
 	}
 
 	if currentInput != "" {
@@ -225,7 +231,7 @@ func buildCleanHistory(history []database.ChatMessage, currentInput string) []Ch
 }
 
 // ParseIntent sends the user's message along with sliding history, active events and long-term memory to NLU.
-func (c *Client) ParseIntent(ctx context.Context, text, currentDatetime string, history []database.ChatMessage, userMemories []database.MemoriaUsuario, latestIdeia *database.Ideia, activeEvents []database.Evento) (*IntentResult, error) {
+func (c *Client) ParseIntent(ctx context.Context, text, currentDatetime string, history []database.ChatMessage, userMemories []database.MemoriaUsuario, latestIdeia *database.Ideia, activeEvents []database.Evento, routines ...[]database.RotinaProativa) (*IntentResult, error) {
 	if c.groqPool.IsEmpty() && c.nvidiaPool.IsEmpty() {
 		return nil, fmt.Errorf("nenhuma chave de IA (Groq ou NVIDIA) configurada")
 	}
@@ -244,6 +250,12 @@ func (c *Client) ParseIntent(ctx context.Context, text, currentDatetime string, 
 	}
 
 	var agendaSb strings.Builder
+	if len(routines) > 0 {
+		agendaSb.WriteString("\nROTINAS EXISTENTES (use o ID correto para alterar ou cancelar; nunca invente IDs):\n")
+		for _, r := range routines[0] {
+			fmt.Fprintf(&agendaSb, "- ID %d: %s às %s (tipo %s, ativo %d)\n", r.ID, r.Nome, r.Horario, r.Tipo, r.Ativo)
+		}
+	}
 	if len(activeEvents) > 0 {
 		agendaSb.WriteString("\n\nCOMPROMISSOS ATIVOS NA AGENDA DO USUÁRIO:\n")
 		for _, ev := range activeEvents {
@@ -323,6 +335,7 @@ Classifique a intenção estritamente em uma das opções abaixo e responda EXCL
 }
 
 5. Para compromissos / eventos na agenda (PONTUAIS ou RECORRENTES):
+Para atividades em casa/online, deslocamento é 0. Preserve preparo e deslocamento explicitamente iguais a 0.
 Aceite variações naturais como: "marque", "anote", "agende", "crie um compromisso", "coloque na minha agenda", "tenho X amanhã às Y", "anotar compromisso toda semana exceto...":
 {
   "tipo": "evento",
@@ -347,13 +360,29 @@ Aceite variações naturais como: "marque", "anote", "agende", "crie um compromi
   "prazo": "YYYY-MM-DD HH:MM:SS" ou ""
 }
 
-7. Para lembretes diários recorrentes (ex: "todo dia às 09:00 mande uma mensagem...", "crie um lembrete..."):
+7. Para lembretes diários recorrentes de TEXTO FIXO (ex: "todo dia às 09:00 me lembre de tomar creatina"):
 {
   "tipo": "lembrete_diario",
   "complexidade": "simples",
   "horario": "HH:MM",
   "mensagem": "Mensagem exata a ser disparada todo dia"
 }
+
+7.1. Para EXECUTAR UMA FERRAMENTA e enviar seu resultado periodicamente (liturgia, briefing, emails, santo, versículo, notícias):
+NUNCA classifique como evento ou lembrete textual. Exemplo: "me mande a liturgia todo dia às 7h".
+{
+  "tipo": "acao_programada",
+  "acao": "liturgia" ou "liturgia_das_horas" ou "briefing" ou "ler_emails" ou "santo_do_dia" ou "versiculo_biblico" ou "noticias",
+  "horario": "HH:MM",
+  "frequencia": "diario" ou "semanal",
+  "dias_semana": [1,2,3,4,5],
+  "termo": "parâmetros da ferramenta, filtros de email ou hora canônica, quando houver"
+}
+Para todos os dias, omita dias_semana. Para exceções, enumere apenas os dias desejados.
+Para mudar/cancelar rotina existente, use alterar_rotina/apagar_rotina e ID existente.
+"Mude para 8h" ou "cancele esse envio" refere-se à rotina discutida no histórico; se ambíguo, pergunte.
+Para briefing imediato use tipo acao, acao briefing. Briefing usa agenda, rotinas, metas e contas reais.
+Email aceita filtros por remetente, assunto, hoje/ontem e desde YYYY-MM-DD; preserve esses filtros em termo.
 
 8. Para ações do app, contas/cartões/assinaturas, buscas e exclusões ("anotar cartão dia 10", "paguei a netflix", "quais contas vencem?", "delete o dentista", "delete isso"):
 {
@@ -387,6 +416,7 @@ Aceite variações naturais como: "marque", "anote", "agende", "crie um compromi
 		Messages:    messages,
 		Temperature: 0.3,
 		MaxTokens:   c.maxTokensQuick,
+		Structured:  true,
 	}
 
 	apiRes, err := c.doRequest(ctx, reqPayload)
@@ -397,6 +427,9 @@ Aceite variações naturais como: "marque", "anote", "agende", "crie um compromi
 	rawResp := apiRes.Text
 	match := jsonBlockRegex.FindString(rawResp)
 	if match == "" {
+		if strings.Contains(rawResp, "{") {
+			return nil, fmt.Errorf("resposta de intenção incompleta")
+		}
 		return &IntentResult{
 			Tipo:             "conversa",
 			Resposta:         SanitizeHumanResponse(rawResp),
@@ -410,15 +443,7 @@ Aceite variações naturais como: "marque", "anote", "agende", "crie um compromi
 
 	var res IntentResult
 	if err := json.Unmarshal([]byte(match), &res); err != nil {
-		return &IntentResult{
-			Tipo:             "conversa",
-			Resposta:         SanitizeHumanResponse(rawResp),
-			PromptTokens:     apiRes.PromptTokens,
-			CompletionTokens: apiRes.ComplTokens,
-			TotalTokens:      apiRes.TotalTokens,
-			ProvedorUsado:    apiRes.Provider,
-			ModeloUsado:      apiRes.Model,
-		}, nil
+		return nil, fmt.Errorf("resposta de intenção inválida: %w", err)
 	}
 
 	res.Resposta = SanitizeHumanResponse(res.Resposta)
@@ -637,14 +662,13 @@ func (c *Client) executePoolAPI(ctx context.Context, url string, keyPool *pool.K
 }
 
 func (c *Client) executeAPI(ctx context.Context, url, apiKey string, payload ChatCompletionRequest) (*APIResponse, error) {
-	// Auto-clamp tokens on Groq to prevent Cloudflare / OTPM (Output Tokens Per Minute) 1000 limit breaches
-	if strings.Contains(url, "groq") {
-		if payload.MaxTokens > 350 {
-			payload.MaxTokens = 350
-		}
-		if payload.MaxTokens <= 0 {
-			payload.MaxTokens = 280
-		}
+	// Preserve the provider quota budget for prose. Structured extraction uses
+	// its own configured budget so longer action JSON is not silently truncated.
+	if strings.Contains(url, "groq") && !payload.Structured && payload.MaxTokens > 350 {
+		payload.MaxTokens = 350
+	}
+	if payload.MaxTokens <= 0 {
+		payload.MaxTokens = 300
 	}
 
 	body, err := json.Marshal(payload)
@@ -685,6 +709,9 @@ func (c *Client) executeAPI(ctx context.Context, url, apiKey string, payload Cha
 
 	if len(res.Choices) == 0 {
 		return nil, fmt.Errorf("api returned 0 choices")
+	}
+	if res.Choices[0].FinishReason == "length" {
+		return nil, fmt.Errorf("resposta truncada pelo limite de tokens")
 	}
 
 	provider := "groq"

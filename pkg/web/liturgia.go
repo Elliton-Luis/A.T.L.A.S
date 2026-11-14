@@ -70,6 +70,18 @@ func FetchLiturgiaDiaria(ctx context.Context) (string, error) {
 		sb.WriteString(fmt.Sprintf("%s\n\n", strings.TrimSpace(data.PrimeiraLeitura.Texto)))
 	}
 
+	// Segunda leitura is absent on weekdays and returned as an object on solemnities.
+	if reading, ok := data.SegundaLeitura.(map[string]interface{}); ok {
+		if reference, ok := reading["referencia"].(string); ok && reference != "" {
+			fmt.Fprintf(&sb, "📜 *2ª Leitura (%s)*\n", reference)
+			if title, ok := reading["titulo"].(string); ok && title != "" {
+				fmt.Fprintf(&sb, "*%s*\n", title)
+			}
+			if text, ok := reading["texto"].(string); ok {
+				fmt.Fprintf(&sb, "%s\n\n", strings.TrimSpace(text))
+			}
+		}
+	}
 	// Salmo
 	if data.Salmo.Referencia != "" {
 		sb.WriteString(fmt.Sprintf("🎵 *Salmo Responsorial (%s)*\n", data.Salmo.Referencia))
@@ -94,13 +106,8 @@ func FetchLiturgiaDiaria(ctx context.Context) (string, error) {
 
 	sb.WriteString("🔗 [Acessar Liturgia Completa no Portal Canção Nova](https://liturgia.cancaonova.com/)")
 
-	fullText := sb.String()
-	// Telegram hard limit is 4096 chars. If liturgy exceeds it on long solemnities, trim safely.
-	if len(fullText) > 4000 {
-		fullText = fullText[:3950] + "\n\n...\n🔗 [Continuar lendo na íntegra no Portal Canção Nova](https://liturgia.cancaonova.com/)"
-	}
-
-	return fullText, nil
+	// Telegram delivery already splits long messages; preserve all readings.
+	return sb.String(), nil
 }
 
 func trimText(s string, maxChars int) string {
