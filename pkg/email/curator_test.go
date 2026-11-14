@@ -54,7 +54,7 @@ func TestCurateEmptyEmails(t *testing.T) {
 		t.Fatalf("CurateEmails failed: %v", err)
 	}
 
-	if !strings.Contains(result, "não tem novos e-mails") {
+	if !strings.Contains(result, "Nenhum e-mail corresponde à consulta") {
 		t.Errorf("expected empty inbox message, got: %s", result)
 	}
 }

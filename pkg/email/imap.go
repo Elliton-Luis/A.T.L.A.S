@@ -17,11 +17,12 @@ var wordDecoder = new(mime.WordDecoder)
 
 // MessageSummary holds the high-level metadata and snippet of an email.
 type MessageSummary struct {
-	ID      string
-	From    string
-	Subject string
-	Date    string
-	Snippet string
+	ID          string
+	From        string
+	Subject     string
+	Date        string
+	Snippet     string
+	UIDValidity string
 }
 
 // Config defines the connection details for a read-only IMAP server.
@@ -93,6 +94,10 @@ func (r *Reader) IsConfigured() bool {
 // FetchRecentUnread connects via TLS, logs in, examines INBOX (read-only),
 // and fetches up to maxCount recent emails without blocking.
 func (r *Reader) FetchRecentUnread(ctx context.Context, maxCount int) ([]MessageSummary, error) {
+	return r.Fetch(ctx, Query{Unread: true}, maxCount)
+}
+
+func (r *Reader) Fetch(ctx context.Context, query Query, maxCount int) ([]MessageSummary, error) {
 	if !r.IsConfigured() {
 		return nil, fmt.Errorf("credenciais IMAP não configuradas no arquivo .env (IMAP_HOST, IMAP_USER, IMAP_PASS)")
 	}
@@ -154,6 +159,7 @@ func (r *Reader) FetchRecentUnread(ctx context.Context, maxCount int) ([]Message
 	}
 
 	totalExists := 0
+	uidValidity := ""
 	for {
 		line, err := tp.ReadLine()
 		if err != nil {
@@ -166,6 +172,9 @@ func (r *Reader) FetchRecentUnread(ctx context.Context, maxCount int) ([]Message
 			return nil, fmt.Errorf("abertura somente-leitura recusada: %s", line)
 		}
 		// Capture * N EXISTS (e.g. * 124 EXISTS)
+		if idx := strings.Index(line, "[UIDVALIDITY "); idx >= 0 {
+			uidValidity = strings.SplitN(line[idx+len("[UIDVALIDITY "):], "]", 2)[0]
+		}
 		if strings.HasPrefix(line, "*") && strings.Contains(line, "EXISTS") {
 			parts := strings.Fields(line)
 			if len(parts) >= 2 {
@@ -182,21 +191,16 @@ func (r *Reader) FetchRecentUnread(ctx context.Context, maxCount int) ([]Message
 
 	// 4. Search for UNSEEN messages
 	searchTag := nextTag()
-	_ = tp.PrintfLine("%s SEARCH UNSEEN", searchTag)
-	ids, _ := readSearchIDs(tp, searchTag)
+	if err := tp.PrintfLine("%s UID SEARCH CHARSET UTF-8 %s", searchTag, query.searchCriteria()); err != nil {
+		return nil, fmt.Errorf("envio de busca: %w", err)
+	}
+	ids, err := readSearchIDs(tp, searchTag)
+	if err != nil {
+		return nil, fmt.Errorf("busca de emails: %w", err)
+	}
 
-	// If no unseen messages, use the sequence range of the newest messages directly
-	// e.g., if totalExists=100 and maxCount=5, range is 96:100.
-	// This avoids "SEARCH ALL" which returns thousands of IDs and hangs the connection!
-	if len(ids) == 0 {
-		start := totalExists - maxCount + 1
-		if start < 1 {
-			start = 1
-		}
-		for i := totalExists; i >= start; i-- {
-			ids = append(ids, strconv.Itoa(i))
-		}
-	} else {
+	// Do not substitute read messages when an unread/filter query returns no matches.
+	if len(ids) > 0 {
 		// Newest first
 		if len(ids) > maxCount {
 			ids = ids[len(ids)-maxCount:]
@@ -209,12 +213,16 @@ func (r *Reader) FetchRecentUnread(ctx context.Context, maxCount int) ([]Message
 	var results []MessageSummary
 	for _, id := range ids {
 		fetchTag := nextTag()
-		fetchCmd := fmt.Sprintf("%s FETCH %s (BODY.PEEK[HEADER.FIELDS (SUBJECT FROM DATE)])", fetchTag, id)
+		fetchCmd := fmt.Sprintf("%s UID FETCH %s (UID BODY.PEEK[]<0.16384>)", fetchTag, id)
 		if err := tp.PrintfLine("%s", fetchCmd); err != nil {
-			continue
+			return nil, fmt.Errorf("envio fetch: %w", err)
 		}
 
-		summary := parseFetchResponse(tp, fetchTag, id)
+		summary, err := parseFetchResponse(tp, fetchTag, id)
+		if err != nil {
+			return nil, err
+		}
+		summary.UIDValidity = uidValidity
 		if summary.Subject != "" || summary.From != "" {
 			results = append(results, summary)
 		}
@@ -261,16 +269,20 @@ func readSearchIDs(tp *textproto.Conn, tag string) ([]string, error) {
 	return ids, nil
 }
 
-func parseFetchResponse(tp *textproto.Conn, tag, id string) MessageSummary {
+func parseFetchResponse(tp *textproto.Conn, tag, id string) (MessageSummary, error) {
 	summary := MessageSummary{ID: id}
+	found := false
 
 	for {
 		line, err := tp.ReadLine()
 		if err != nil {
-			break
+			return summary, fmt.Errorf("leitura fetch: %w", err)
 		}
 
-		if strings.HasPrefix(line, tag+" OK") || strings.HasPrefix(line, tag+" NO") || strings.HasPrefix(line, tag+" BAD") {
+		if strings.HasPrefix(line, tag+" NO") || strings.HasPrefix(line, tag+" BAD") {
+			return summary, fmt.Errorf("fetch recusado: %s", line)
+		}
+		if strings.HasPrefix(line, tag+" OK") {
 			break
 		}
 
@@ -288,19 +300,23 @@ func parseFetchResponse(tp *textproto.Conn, tag, id string) MessageSummary {
 		}
 
 		if literalBytes > 0 {
+			found = true
+			if literalBytes > 65536 {
+				return summary, fmt.Errorf("resposta IMAP excede limite de leitura")
+			}
 			buf := make([]byte, literalBytes)
 			_, err := io.ReadFull(tp.R, buf)
-			if err == nil {
-				headerStr := string(buf)
-				lines := strings.Split(headerStr, "\n")
-				for _, hline := range lines {
-					parseHeaderLine(hline, &summary)
-				}
+			if err != nil {
+				return summary, fmt.Errorf("conteúdo IMAP incompleto: %w", err)
 			}
+			readMessageContent(buf, &summary)
 			continue
 		}
 
 		parseHeaderLine(line, &summary)
+	}
+	if !found {
+		return summary, fmt.Errorf("UID %s não retornou conteúdo", id)
 	}
 
 	if summary.Subject == "" {
@@ -310,7 +326,7 @@ func parseFetchResponse(tp *textproto.Conn, tag, id string) MessageSummary {
 		summary.From = "(Remetente desconhecido)"
 	}
 
-	return summary
+	return summary, nil
 }
 
 func parseHeaderLine(line string, summary *MessageSummary) {

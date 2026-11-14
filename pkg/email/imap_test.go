@@ -91,6 +91,9 @@ func TestIMAPReaderWorkflow(t *testing.T) {
 			}
 			tag := parts[0]
 			cmd := strings.ToUpper(parts[1])
+			if cmd == "UID" {
+				cmd = strings.ToUpper(parts[2])
+			}
 
 			switch cmd {
 			case "LOGIN":
@@ -98,13 +101,18 @@ func TestIMAPReaderWorkflow(t *testing.T) {
 			case "EXAMINE":
 				fmt.Fprintf(writer, "* FLAGS (\\Answered \\Flagged \\Deleted \\Seen \\Draft)\r\n")
 				fmt.Fprintf(writer, "* 10 EXISTS\r\n")
+				fmt.Fprintf(writer, "* OK [UIDVALIDITY 123] UIDs valid\r\n")
 				fmt.Fprintf(writer, "%s OK [READ-ONLY] EXAMINE completed\r\n", tag)
 			case "SEARCH":
 				fmt.Fprintf(writer, "* SEARCH 101 102\r\n")
 				fmt.Fprintf(writer, "%s OK SEARCH completed\r\n", tag)
 			case "FETCH":
-				fmt.Fprintf(writer, "* %s FETCH (BODY[HEADER.FIELDS (SUBJECT FROM DATE)] {120}\r\n", parts[2])
-				fmt.Fprintf(writer, "Subject: Fatura do Cartao Disponivel\r\nFrom: banco@exemplo.com\r\nDate: 12 Nov 2026 20:00:00 -0300\r\n\r\nPrezado cliente, sua fatura fechou.)\r\n")
+				if !strings.Contains(line, "BODY.PEEK[]") {
+					t.Error("FETCH deve usar BODY.PEEK")
+				}
+				body := "Subject: Fatura do Cartao Disponivel\r\nFrom: banco@exemplo.com\r\nDate: 12 Nov 2026 20:00:00 -0300\r\n\r\nPrezado cliente, sua fatura fechou."
+				fmt.Fprintf(writer, "* 1 FETCH (UID %s BODY[] {%d}\r\n", parts[3], len(body))
+				fmt.Fprintf(writer, "%s)\r\n", body)
 				fmt.Fprintf(writer, "%s OK FETCH completed\r\n", tag)
 			case "LOGOUT":
 				fmt.Fprintf(writer, "* BYE Mock server signing off\r\n")
@@ -148,6 +156,9 @@ func TestIMAPReaderWorkflow(t *testing.T) {
 	}
 	if res[0].From != "banco@exemplo.com" {
 		t.Errorf("expected from 'banco@exemplo.com', got '%s'", res[0].From)
+	}
+	if !strings.Contains(res[0].Snippet, "sua fatura fechou") || res[0].UIDValidity != "123" {
+		t.Fatalf("conteúdo ou UIDVALIDITY ausente: %+v", res[0])
 	}
 }
 
